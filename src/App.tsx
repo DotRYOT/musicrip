@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Music, Download, Settings as SettingsIcon, Server, RefreshCw, Trash2, Play, Pause, X, Check, AlertCircle, Loader2, Search, Disc3 } from 'lucide-react';
+import { RefreshCw, Play, Pause, X, Check, AlertCircle, Loader2 } from 'lucide-react';
 import type { Playlist, Track, Settings, ServerStatus } from './types';
 import { fetchPlaylist, startDownload, getServerStatus, getDownloadProgress, pauseDownload, resumeDownload, cancelDownload, retryTrack, skipTrack } from './api';
 
@@ -159,45 +159,45 @@ function App() {
   const progressPercent = playlist ? Math.round((completedCount / playlist.tracks.length) * 100) : 0;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 text-white">
+    <div className="min-h-screen bg-[#0a0a0a] text-[#33ff33] crt-effect">
       {/* Header */}
-      <header className="border-b border-gray-800/50 backdrop-blur-xl bg-gray-950/50 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+      <header className="border-b border-[#1a3a1a]">
+        <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-                <Music className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                  Playlist Ripper
-                </h1>
-                <p className="text-xs text-gray-500">YouTube Music & Tidal → Local Audio</p>
-              </div>
+            <div>
+              <pre className="text-xs glow-strong leading-tight">
+{`╔══════════════════════════════════════════╗
+║  PLAYLIST RIPPER v1.0                    ║
+║  YouTube Music & Tidal Audio Downloader  ║
+╚══════════════════════════════════════════╝`}
+              </pre>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4">
               <ServerStatusBadge status={serverStatus} />
               <button
                 onClick={() => setShowSettings(!showSettings)}
-                className="p-2 rounded-lg bg-gray-800/50 hover:bg-gray-700/50 border border-gray-700/50 transition-colors"
+                className="ascii-btn px-3 py-1 text-xs"
               >
-                <SettingsIcon className="w-5 h-5 text-gray-400" />
+                [SETTINGS]
               </button>
             </div>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
         {/* Server Warning */}
         {serverStatus && !serverStatus.connected && (
-          <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-amber-200 font-medium">Backend server not connected</p>
-              <p className="text-amber-200/70 text-sm mt-1">
-                Make sure the backend server is running on port 3001. Run <code className="bg-amber-500/20 px-1.5 py-0.5 rounded text-amber-300">npm run server</code> to start it.
-              </p>
+          <div className="ascii-border border-[#ffaa00] bg-[#1a1a0a] p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-[#ffaa00] flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[#ffaa00] font-bold">⚠ WARNING: Backend server not connected</p>
+                <p className="text-[#aa7700] text-sm mt-1">
+                  Make sure the backend server is running on port 3001.<br/>
+                  Run: <code className="bg-[#1a1a0a] px-2 py-0.5 border border-[#aa7700]">npm run server</code>
+                </p>
+              </div>
             </div>
           </div>
         )}
@@ -208,62 +208,66 @@ function App() {
         )}
 
         {/* Playlist Input */}
-        <div className="bg-gray-900/50 border border-gray-800/50 rounded-2xl p-6 backdrop-blur-sm">
-          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <Disc3 className="w-5 h-5 text-purple-400" />
-            Import Playlist
-          </h2>
+        <div className="ascii-border p-4">
+          <pre className="text-xs mb-3 glow">
+{`┌──────────────────────────────────────────┐
+│  IMPORT PLAYLIST                         │
+└──────────────────────────────────────────┘`}
+          </pre>
           <div className="flex flex-col sm:flex-row gap-3">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+            <div className="flex-1">
               <input
                 type="text"
                 value={playlistUrl}
                 onChange={(e) => setPlaylistUrl(e.target.value)}
                 placeholder="Paste YouTube Music or Tidal playlist URL..."
-                className="w-full pl-10 pr-4 py-3 bg-gray-800/50 border border-gray-700/50 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/25 transition-all"
+                className="w-full px-3 py-2 ascii-input text-sm"
                 onKeyDown={(e) => e.key === 'Enter' && handleFetchPlaylist()}
               />
             </div>
             <button
               onClick={handleFetchPlaylist}
               disabled={isLoading || !playlistUrl.trim()}
-              className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-xl font-medium transition-all flex items-center gap-2 whitespace-nowrap"
+              className="ascii-btn px-6 py-2 text-sm flex items-center gap-2"
             >
-              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-              {isLoading ? 'Fetching...' : 'Fetch Playlist'}
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              {isLoading ? '[FETCHING...]' : '[FETCH PLAYLIST]'}
             </button>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-500">
-            <span>Supported:</span>
-            <span className="bg-gray-800/50 px-2 py-0.5 rounded">YouTube Music Playlists</span>
-            <span className="bg-gray-800/50 px-2 py-0.5 rounded">Tidal Playlists</span>
-            <span className="bg-gray-800/50 px-2 py-0.5 rounded">YouTube Playlists</span>
+          <div className="mt-3 text-xs text-[#1a3a1a]">
+            <span>SUPPORTED:</span>
+            <span className="ml-2">YouTube Music</span>
+            <span className="ml-2">•</span>
+            <span className="ml-2">Tidal</span>
+            <span className="ml-2">•</span>
+            <span className="ml-2">YouTube</span>
           </div>
         </div>
 
         {/* Error */}
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="text-red-200">{error}</p>
+          <div className="ascii-border border-[#ff3333] bg-[#1a0a0a] p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-[#ff3333] flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-[#ff3333]">ERROR: {error}</p>
+              </div>
+              <button onClick={() => setError(null)} className="text-[#ff3333] hover:text-[#ff6666]">
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300">
-              <X className="w-4 h-4" />
-            </button>
           </div>
         )}
 
         {/* Playlist Content */}
         {playlist && (
-          <div className="bg-gray-900/50 border border-gray-800/50 rounded-2xl overflow-hidden backdrop-blur-sm">
+          <div className="ascii-border">
             {/* Playlist Header */}
-            <div className="p-6 border-b border-gray-800/50">
+            <div className="p-4 border-b border-[#1a3a1a]">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                  <h3 className="text-lg font-bold">{playlist.title}</h3>
-                  <p className="text-sm text-gray-400 mt-1">
+                  <h3 className="text-lg font-bold glow">{playlist.title}</h3>
+                  <p className="text-xs text-[#1a3a1a] mt-1">
                     {playlist.tracks.length} tracks • Source: {playlist.source === 'youtube' ? 'YouTube Music' : 'Tidal'}
                   </p>
                 </div>
@@ -271,24 +275,24 @@ function App() {
                   {!isDownloading ? (
                     <button
                       onClick={handleStartDownload}
-                      className="px-4 py-2 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 rounded-lg font-medium text-sm flex items-center gap-2 transition-all"
+                      className="ascii-btn px-4 py-2 text-xs flex items-center gap-2"
                     >
                       <Play className="w-4 h-4" />
-                      Download All
+                      [DOWNLOAD ALL]
                     </button>
                   ) : (
                     <>
                       {isPaused ? (
-                        <button onClick={handleResume} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg font-medium text-sm flex items-center gap-2">
-                          <Play className="w-4 h-4" /> Resume
+                        <button onClick={handleResume} className="ascii-btn px-4 py-2 text-xs flex items-center gap-2">
+                          <Play className="w-4 h-4" /> [RESUME]
                         </button>
                       ) : (
-                        <button onClick={handlePause} className="px-4 py-2 bg-amber-600 hover:bg-amber-500 rounded-lg font-medium text-sm flex items-center gap-2">
-                          <Pause className="w-4 h-4" /> Pause
+                        <button onClick={handlePause} className="ascii-btn px-4 py-2 text-xs flex items-center gap-2">
+                          <Pause className="w-4 h-4" /> [PAUSE]
                         </button>
                       )}
-                      <button onClick={handleCancel} className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg font-medium text-sm flex items-center gap-2">
-                        <X className="w-4 h-4" /> Cancel
+                      <button onClick={handleCancel} className="ascii-btn px-4 py-2 text-xs flex items-center gap-2 border-[#ff3333] text-[#ff3333] hover:bg-[#ff3333] hover:text-[#0a0a0a]">
+                        <X className="w-4 h-4" /> [CANCEL]
                       </button>
                     </>
                   )}
@@ -298,36 +302,40 @@ function App() {
               {/* Progress Bar */}
               {(isDownloading || completedCount > 0) && (
                 <div className="mt-4">
-                  <div className="flex items-center justify-between text-sm mb-2">
-                    <span className="text-gray-400">
-                      {completedCount} / {playlist.tracks.length} completed
-                      {errorCount > 0 && <span className="text-red-400 ml-2">({errorCount} errors)</span>}
+                  <div className="flex items-center justify-between text-xs mb-2">
+                    <span className="text-[#1a3a1a]">
+                      PROGRESS: {completedCount} / {playlist.tracks.length}
+                      {errorCount > 0 && <span className="text-[#ff3333] ml-2">({errorCount} ERRORS)</span>}
                     </span>
-                    <span className="text-purple-400 font-medium">{progressPercent}%</span>
+                    <span className="text-[#33ff33] font-bold glow">{progressPercent}%</span>
                   </div>
-                  <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full transition-all duration-500"
-                      style={{ width: `${progressPercent}%` }}
-                    />
+                  <div className="w-full h-4 bg-[#0a0a0a] border border-[#1a3a1a] overflow-hidden font-mono">
+                    <div className="h-full flex items-center justify-center text-xs">
+                      <div
+                        className="h-full bg-[#33ff33] transition-all duration-500 flex items-center justify-center text-[#0a0a0a] font-bold"
+                        style={{ width: `${progressPercent}%` }}
+                      >
+                        {progressPercent > 10 && '█'.repeat(Math.floor(progressPercent / 5))}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
             </div>
 
             {/* Filter Tabs */}
-            <div className="px-6 pt-4 flex gap-2">
+            <div className="px-4 pt-3 flex gap-2 border-b border-[#1a3a1a]">
               {(['all', 'pending', 'completed', 'error'] as const).map(f => (
                 <button
                   key={f}
                   onClick={() => setFilter(f)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  className={`px-3 py-1 text-xs transition-colors ${
                     filter === f
-                      ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                      : 'bg-gray-800/50 text-gray-400 hover:text-gray-300 border border-transparent'
+                      ? 'bg-[#33ff33] text-[#0a0a0a] border border-[#33ff33]'
+                      : 'bg-transparent text-[#1a3a1a] hover:text-[#33ff33] border border-[#1a3a1a] hover:border-[#33ff33]'
                   }`}
                 >
-                  {f.charAt(0).toUpperCase() + f.slice(1)}
+                  [{f.toUpperCase()}]
                   {f === 'all' && ` (${playlist.tracks.length})`}
                   {f === 'pending' && ` (${playlist.tracks.filter(t => t.status === 'pending' || t.status === 'searching').length})`}
                   {f === 'completed' && ` (${completedCount})`}
@@ -337,7 +345,7 @@ function App() {
             </div>
 
             {/* Track List */}
-            <div className="p-4 max-h-[600px] overflow-y-auto space-y-1">
+            <div className="p-2 max-h-[600px] overflow-y-auto">
               {filteredTracks.map((track, index) => (
                 <TrackRow
                   key={track.id}
@@ -349,7 +357,7 @@ function App() {
                 />
               ))}
               {filteredTracks.length === 0 && (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-[#1a3a1a]">
                   No tracks match the current filter
                 </div>
               )}
@@ -360,14 +368,32 @@ function App() {
         {/* Empty State */}
         {!playlist && !isLoading && (
           <div className="text-center py-16">
-            <div className="w-20 h-20 mx-auto rounded-2xl bg-gray-800/50 flex items-center justify-center mb-4">
-              <Music className="w-10 h-10 text-gray-600" />
-            </div>
-            <h3 className="text-lg font-medium text-gray-400">No playlist loaded</h3>
-            <p className="text-sm text-gray-600 mt-2">Paste a YouTube Music or Tidal playlist URL above to get started</p>
+            <pre className="text-[#1a3a1a] text-xs inline-block">
+{`
+╔══════════════════════════════════════════╗
+║                                          ║
+║         NO PLAYLIST LOADED               ║
+║                                          ║
+║    Paste a YouTube Music or Tidal        ║
+║    playlist URL above to get started     ║
+║                                          ║
+╚══════════════════════════════════════════╝
+`}
+            </pre>
           </div>
         )}
       </main>
+
+      {/* Footer */}
+      <footer className="border-t border-[#1a3a1a] mt-12 py-4">
+        <div className="max-w-7xl mx-auto px-4 text-center text-xs text-[#1a3a1a]">
+          <pre className="inline-block">
+{`═══════════════════════════════════════════════════════════
+Playlist Ripper v1.0 | Arch Linux / CachyOS | MIT License
+═══════════════════════════════════════════════════════════`}
+          </pre>
+        </div>
+      </footer>
     </div>
   );
 }
@@ -380,47 +406,39 @@ function TrackRow({ track, index, onRetry, onSkip, isDownloading }: {
   isDownloading: boolean;
 }) {
   const statusConfig = {
-    pending: { icon: null, color: 'text-gray-500', bg: 'bg-gray-800/30' },
-    searching: { icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />, color: 'text-blue-400', bg: 'bg-blue-500/10' },
-    downloading: { icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />, color: 'text-purple-400', bg: 'bg-purple-500/10' },
-    completed: { icon: <Check className="w-3.5 h-3.5" />, color: 'text-green-400', bg: 'bg-green-500/10' },
-    error: { icon: <AlertCircle className="w-3.5 h-3.5" />, color: 'text-red-400', bg: 'bg-red-500/10' },
-    skipped: { icon: <X className="w-3.5 h-3.5" />, color: 'text-gray-500', bg: 'bg-gray-800/30' },
+    pending: { icon: null, color: 'text-[#1a3a1a]', bg: '' },
+    searching: { icon: <Loader2 className="w-3 h-3 animate-spin" />, color: 'text-[#33aaff]', bg: 'bg-[#0a1a2a]' },
+    downloading: { icon: <Loader2 className="w-3 h-3 animate-spin" />, color: 'text-[#33ff33]', bg: 'bg-[#0a1a0a]' },
+    completed: { icon: <Check className="w-3 h-3" />, color: 'text-[#33ff33]', bg: 'bg-[#0a1a0a]' },
+    error: { icon: <AlertCircle className="w-3 h-3" />, color: 'text-[#ff3333]', bg: 'bg-[#1a0a0a]' },
+    skipped: { icon: <X className="w-3 h-3" />, color: 'text-[#1a3a1a]', bg: '' },
   };
 
   const config = statusConfig[track.status];
 
   return (
-    <div className={`flex items-center gap-3 px-3 py-2.5 rounded-lg ${config.bg} group`}>
-      <span className="text-xs text-gray-600 w-6 text-right font-mono">{index}</span>
-      
-      {track.thumbnail ? (
-        <img src={track.thumbnail} alt="" className="w-10 h-10 rounded object-cover flex-shrink-0" />
-      ) : (
-        <div className="w-10 h-10 rounded bg-gray-800 flex items-center justify-center flex-shrink-0">
-          <Music className="w-4 h-4 text-gray-600" />
-        </div>
-      )}
+    <div className={`flex items-center gap-2 px-2 py-1.5 border-b border-[#0d1a0d] hover:bg-[#0d1a0d] group ${config.bg}`}>
+      <span className="text-xs text-[#1a3a1a] w-8 text-right font-mono">{String(index).padStart(3, '0')}</span>
       
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{track.title}</p>
-        <p className="text-xs text-gray-500 truncate">{track.artist}</p>
+        <p className="text-xs font-medium truncate">{track.title}</p>
+        <p className="text-[10px] text-[#1a3a1a] truncate">{track.artist}</p>
       </div>
 
       {/* Progress bar for downloading */}
       {track.status === 'downloading' && (
-        <div className="w-20 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+        <div className="w-16 h-2 bg-[#0a0a0a] border border-[#1a3a1a] overflow-hidden">
           <div
-            className="h-full bg-purple-500 rounded-full transition-all"
+            className="h-full bg-[#33ff33] transition-all"
             style={{ width: `${track.progress}%` }}
           />
         </div>
       )}
 
       {/* Status */}
-      <div className={`flex items-center gap-1.5 ${config.color}`}>
+      <div className={`flex items-center gap-1 ${config.color}`}>
         {config.icon}
-        <span className="text-xs capitalize hidden sm:inline">{track.status}</span>
+        <span className="text-[10px] uppercase hidden sm:inline">{track.status}</span>
       </div>
 
       {/* Actions */}
@@ -428,17 +446,17 @@ function TrackRow({ track, index, onRetry, onSkip, isDownloading }: {
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={() => onRetry(track.id)}
-            className="p-1 rounded hover:bg-gray-700/50 text-blue-400"
+            className="p-1 hover:bg-[#1a3a1a] text-[#33aaff]"
             title="Retry"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            <RefreshCw className="w-3 h-3" />
           </button>
           <button
             onClick={() => onSkip(track.id)}
-            className="p-1 rounded hover:bg-gray-700/50 text-gray-400"
+            className="p-1 hover:bg-[#1a3a1a] text-[#1a3a1a]"
             title="Skip"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="w-3 h-3" />
           </button>
         </div>
       )}
@@ -450,111 +468,114 @@ function ServerStatusBadge({ status }: { status: ServerStatus | null }) {
   if (!status) return null;
   
   return (
-    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs ${
-      status.connected ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'
+    <div className={`flex items-center gap-2 px-2 py-1 text-xs border ${
+      status.connected ? 'border-[#33ff33] text-[#33ff33]' : 'border-[#ff3333] text-[#ff3333]'
     }`}>
-      <div className={`w-2 h-2 rounded-full ${status.connected ? 'bg-green-400' : 'bg-red-400'} ${status.connected ? 'animate-pulse' : ''}`} />
-      <span>{status.connected ? 'Server Online' : 'Server Offline'}</span>
+      <div className={`w-2 h-2 ${status.connected ? 'bg-[#33ff33] blink' : 'bg-[#ff3333]'}`} />
+      <span>{status.connected ? 'SERVER ONLINE' : 'SERVER OFFLINE'}</span>
     </div>
   );
 }
 
 function SettingsPanel({ settings, setSettings }: { settings: Settings; setSettings: (s: Settings) => void }) {
   return (
-    <div className="bg-gray-900/50 border border-gray-800/50 rounded-2xl p-6 backdrop-blur-sm">
-      <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-        <SettingsIcon className="w-5 h-5 text-purple-400" />
-        Settings
-      </h2>
+    <div className="ascii-border p-4">
+      <pre className="text-xs mb-4 glow">
+{`┌──────────────────────────────────────────┐
+│  SETTINGS                                │
+└──────────────────────────────────────────┘`}
+      </pre>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label className="block text-sm text-gray-400 mb-1">Output Directory</label>
+          <label className="block text-xs text-[#1a3a1a] mb-1">OUTPUT DIRECTORY:</label>
           <input
             type="text"
             value={settings.outputDir}
             onChange={(e) => setSettings({ ...settings, outputDir: e.target.value })}
-            className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500/50"
+            className="w-full px-3 py-2 ascii-input text-xs"
           />
         </div>
         
         <div>
-          <label className="block text-sm text-gray-400 mb-1">Audio Format</label>
+          <label className="block text-xs text-[#1a3a1a] mb-1">AUDIO FORMAT:</label>
           <select
             value={settings.audioFormat}
             onChange={(e) => setSettings({ ...settings, audioFormat: e.target.value as Settings['audioFormat'] })}
-            className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500/50"
+            className="w-full px-3 py-2 ascii-input text-xs"
           >
             <option value="mp3">MP3</option>
             <option value="flac">FLAC</option>
-            <option value="opus">Opus</option>
+            <option value="opus">OPUS</option>
             <option value="m4a">M4A (AAC)</option>
           </select>
         </div>
         
         <div>
-          <label className="block text-sm text-gray-400 mb-1">Audio Quality (kbps)</label>
+          <label className="block text-xs text-[#1a3a1a] mb-1">AUDIO QUALITY (KBPS):</label>
           <select
             value={settings.audioQuality}
             onChange={(e) => setSettings({ ...settings, audioQuality: e.target.value })}
-            className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500/50"
+            className="w-full px-3 py-2 ascii-input text-xs"
           >
-            <option value="128">128 kbps</option>
-            <option value="192">192 kbps</option>
-            <option value="256">256 kbps</option>
-            <option value="320">320 kbps</option>
-            <option value="0">Best Available</option>
+            <option value="128">128 KBPS</option>
+            <option value="192">192 KBPS</option>
+            <option value="256">256 KBPS</option>
+            <option value="320">320 KBPS</option>
+            <option value="0">BEST AVAILABLE</option>
           </select>
         </div>
 
         <div>
-          <label className="block text-sm text-gray-400 mb-1">Naming Template</label>
+          <label className="block text-xs text-[#1a3a1a] mb-1">NAMING TEMPLATE:</label>
           <input
             type="text"
             value={settings.namingTemplate}
             onChange={(e) => setSettings({ ...settings, namingTemplate: e.target.value })}
             placeholder="{artist} - {title}"
-            className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500/50"
+            className="w-full px-3 py-2 ascii-input text-xs"
           />
         </div>
 
         <div className="md:col-span-2">
-          <h3 className="text-sm font-medium text-purple-400 mb-2">Tidal API Credentials</h3>
+          <pre className="text-xs text-[#33ff33] mb-2 glow">
+{`┌─ TIDAL API CREDENTIALS ─────────────────┐`}
+          </pre>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">API Key</label>
+              <label className="block text-[10px] text-[#1a3a1a] mb-1">API KEY:</label>
               <input
                 type="password"
                 value={settings.tidalApiKey}
                 onChange={(e) => setSettings({ ...settings, tidalApiKey: e.target.value })}
-                className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500/50"
+                className="w-full px-3 py-2 ascii-input text-xs"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">API Secret</label>
+              <label className="block text-[10px] text-[#1a3a1a] mb-1">API SECRET:</label>
               <input
                 type="password"
                 value={settings.tidalApiSecret}
                 onChange={(e) => setSettings({ ...settings, tidalApiSecret: e.target.value })}
-                className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500/50"
+                className="w-full px-3 py-2 ascii-input text-xs"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Access Token</label>
+              <label className="block text-[10px] text-[#1a3a1a] mb-1">ACCESS TOKEN:</label>
               <input
                 type="password"
                 value={settings.tidalAccessToken}
                 onChange={(e) => setSettings({ ...settings, tidalAccessToken: e.target.value })}
-                className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500/50"
+                className="w-full px-3 py-2 ascii-input text-xs"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">User ID</label>
+              <label className="block text-[10px] text-[#1a3a1a] mb-1">USER ID:</label>
               <input
                 type="text"
                 value={settings.tidalUserId}
                 onChange={(e) => setSettings({ ...settings, tidalUserId: e.target.value })}
-                className="w-full px-3 py-2 bg-gray-800/50 border border-gray-700/50 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500/50"
+                className="w-full px-3 py-2 ascii-input text-xs"
               />
             </div>
           </div>
@@ -566,18 +587,16 @@ function SettingsPanel({ settings, setSettings }: { settings: Settings; setSetti
               type="checkbox"
               checked={settings.embedMetadata}
               onChange={(e) => setSettings({ ...settings, embedMetadata: e.target.checked })}
-              className="rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-purple-500/25"
             />
-            <span className="text-sm text-gray-300">Embed metadata</span>
+            <span className="text-xs text-[#33ff33]">EMBED METADATA</span>
           </label>
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={settings.embedThumbnail}
               onChange={(e) => setSettings({ ...settings, embedThumbnail: e.target.checked })}
-              className="rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-purple-500/25"
             />
-            <span className="text-sm text-gray-300">Embed thumbnail</span>
+            <span className="text-xs text-[#33ff33]">EMBED THUMBNAIL</span>
           </label>
         </div>
       </div>

@@ -1,46 +1,187 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @layer base {
-  body {
-    @apply bg-gray-950 text-white antialiased;
+  * {
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
   }
 
-  /* Custom scrollbar */
+  body {
+    background: #0a0a0a;
+    color: #33ff33;
+    image-rendering: pixelated;
+  }
+
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
   }
 
   ::-webkit-scrollbar-track {
-    background: rgba(17, 17, 17, 0.5);
+    background: #0a0a0a;
+    border-left: 1px solid #1a3a1a;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgba(75, 75, 75, 0.5);
-    border-radius: 4px;
+    background: #1a3a1a;
+    border: 1px solid #33ff33;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(100, 100, 100, 0.7);
+    background: #33ff33;
+    color: #0a0a0a;
   }
 
-  /* Firefox scrollbar */
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(75, 75, 75, 0.5) rgba(17, 17, 17, 0.5);
+    scrollbar-color: #1a3a1a #0a0a0a;
+  }
+
+  ::selection {
+    background: #33ff33;
+    color: #0a0a0a;
   }
 }
 
 @layer components {
+  .ascii-border {
+    border: 1px solid #33ff33;
+    box-shadow: 0 0 5px rgba(51, 255, 51, 0.1);
+  }
+
+  .ascii-border-dim {
+    border: 1px solid #1a3a1a;
+  }
+
+  .ascii-btn {
+    border: 1px solid #33ff33;
+    background: transparent;
+    color: #33ff33;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: all 0.1s;
+  }
+
+  .ascii-btn:hover {
+    background: #33ff33;
+    color: #0a0a0a;
+    text-shadow: none;
+  }
+
+  .ascii-btn:disabled {
+    border-color: #1a3a1a;
+    color: #1a3a1a;
+    cursor: not-allowed;
+  }
+
+  .ascii-btn:disabled:hover {
+    background: transparent;
+    color: #1a3a1a;
+  }
+
+  .ascii-input {
+    background: #0a0a0a;
+    border: 1px solid #1a3a1a;
+    color: #33ff33;
+    caret-color: #33ff33;
+  }
+
+  .ascii-input:focus {
+    border-color: #33ff33;
+    outline: none;
+    box-shadow: 0 0 5px rgba(51, 255, 51, 0.2);
+  }
+
+  .ascii-input::placeholder {
+    color: #1a3a1a;
+  }
+
+  .glow {
+    text-shadow: 0 0 5px rgba(51, 255, 51, 0.5);
+  }
+
+  .glow-strong {
+    text-shadow: 0 0 10px rgba(51, 255, 51, 0.8), 0 0 20px rgba(51, 255, 51, 0.3);
+  }
+
+  .blink {
+    animation: blink 1s step-end infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  .scanline {
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.1) 2px,
+      rgba(0, 0, 0, 0.1) 4px
+    );
+    pointer-events: none;
+  }
+
+  .crt-effect {
+    position: relative;
+  }
+
+  .crt-effect::after {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.05) 2px,
+      rgba(0, 0, 0, 0.05) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
   input[type="checkbox"] {
-    @apply w-4 h-4 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-purple-500/25 cursor-pointer;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid #33ff33;
+    background: #0a0a0a;
+    cursor: pointer;
+    position: relative;
+  }
+
+  input[type="checkbox"]:checked {
+    background: #33ff33;
+  }
+
+  input[type="checkbox"]:checked::after {
+    content: '×';
+    position: absolute;
+    top: -3px;
+    left: 2px;
+    color: #0a0a0a;
+    font-size: 14px;
+    font-weight: bold;
   }
 
   select {
-    @apply appearance-none bg-no-repeat;
-    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
-    background-position: right 0.5rem center;
-    background-size: 1.5em 1.5em;
-    padding-right: 2.5rem;
+    appearance: none;
+    background-image: none;
+    padding-right: 2rem;
+    background-color: #0a0a0a;
+    border: 1px solid #1a3a1a;
+    color: #33ff33;
+    cursor: pointer;
+  }
+
+  select:focus {
+    border-color: #33ff33;
+    outline: none;
   }
 }
