@@ -61,7 +61,7 @@ sudo pacman -S python-requests
 ### 1. Clone the Repository
 
 ```bash
-git clone <your-repo-url> playlist-ripper
+git clone https://github.com/DotRYOT/musicrip.git playlist-ripper
 cd playlist-ripper
 ```
 
