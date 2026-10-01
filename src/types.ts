@@ -1,0 +1,55 @@
+export interface Track {
+  id: string;
+  title: string;
+  artist: string;
+  album?: string;
+  duration?: number;
+  thumbnail?: string;
+  source: 'youtube' | 'tidal';
+  status: 'pending' | 'searching' | 'downloading' | 'completed' | 'error' | 'skipped';
+  progress: number;
+  error?: string;
+  youtubeMatch?: string;
+  outputPath?: string;
+}
+
+export interface Playlist {
+  id: string;
+  title: string;
+  source: 'youtube' | 'tidal';
+  url: string;
+  tracks: Track[];
+  totalTracks: number;
+  completedTracks: number;
+  status: 'idle' | 'fetching' | 'downloading' | 'completed' | 'error';
+}
+
+export interface Settings {
+  outputDir: string;
+  audioFormat: 'mp3' | 'flac' | 'opus' | 'm4a';
+  audioQuality: string;
+  tidalApiKey: string;
+  tidalApiSecret: string;
+  tidalAccessToken: string;
+  tidalUserId: string;
+  embedMetadata: boolean;
+  embedThumbnail: boolean;
+  namingTemplate: string;
+}
+
+export interface ServerStatus {
+  connected: boolean;
+  ytDlpInstalled: boolean;
+  ytDlpVersion: string;
+  ffmpegInstalled: boolean;
+  downloadDir: string;
+  activeDownloads: number;
+}
+
+export interface DownloadJob {
+  id: string;
+  playlist: Playlist;
+  status: 'running' | 'paused' | 'completed' | 'error';
+  currentTrack: number;
+  totalTracks: number;
+}
