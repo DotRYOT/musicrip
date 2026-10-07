@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const execAsync = promisify(exec);
@@ -27,6 +28,8 @@ let currentSettings = {
   tidalApiKey: '',
   tidalApiSecret: '',
   tidalAccessToken: '',
+  tidalRefreshToken: '',
+  tidalTokenExpiresAt: 0,
   tidalUserId: '',
   embedMetadata: true,
   embedThumbnail: true,
@@ -41,6 +44,173 @@ try {
     currentSettings = { ...currentSettings, ...saved };
   }
 } catch {}
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(currentSettings, null, 2));
+  } catch {}
+}
+
+// ─── Tidal OAuth2 (PKCE) ──────────────────────────────────────────────────
+// With just a Client ID + Client Secret the user can click "Connect Tidal"
+// and the whole token flow happens automatically in the background.
+const TIDAL_AUTH_BASE = 'https://login.tidal.com/authorize';
+const TIDAL_TOKEN_URL = 'https://auth.tidal.com/v1/oauth2/token';
+const TIDAL_CLIENT_ID = process.env.TIDAL_CLIENT_ID || 'p9mbkShw0JU3uW2W'; // public app client id, override via env or UI
+const TIDAL_SCOPES = 'r.usersonlyplaylists offline_access';
+
+function b64url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+const tidalAuthSessions = new Map(); // state -> { codeVerifier, createdAt }
+
+async function tidalTokenRequest(bodyParams) {
+  const res = await fetch(TIDAL_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(bodyParams).toString(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error_description || data.error || `Tidal auth failed (HTTP ${res.status})`);
+  }
+  return data;
+}
+
+function storeTidalTokens(tokens) {
+  currentSettings.tidalAccessToken = tokens.access_token || '';
+  currentSettings.tidalRefreshToken = tokens.refresh_token || currentSettings.tidalRefreshToken || '';
+  currentSettings.tidalTokenExpiresAt = Date.now() + (tokens.expires_in || 360000) * 1000;
+  currentSettings.tidalUserId = String(tokens.user_id || currentSettings.tidalUserId || '');
+  saveSettings();
+}
+
+async function refreshTidalToken(settings) {
+  const clientId = settings.tidalApiKey || TIDAL_CLIENT_ID;
+  const clientSecret = settings.tidalApiSecret;
+  const refreshToken = settings.tidalRefreshToken;
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('NO_REFRESH');
+  }
+  const tokens = await tidalTokenRequest({
+    grant_type: 'refresh_token',
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+  });
+  storeTidalTokens(tokens);
+  return tokens.access_token;
+}
+
+// Returns a valid access token, refreshing it automatically when needed.
+async function getTidalAccessToken(settings) {
+  const hasToken = !!settings.tidalAccessToken;
+  const expired = settings.tidalTokenExpiresAt && Date.now() > settings.tidalTokenExpiresAt - 60000;
+  if (hasToken && !expired) return settings.tidalAccessToken;
+  if (settings.tidalRefreshToken) {
+    try {
+      return await refreshTidalToken(settings);
+    } catch (err) {
+      if (!hasToken) throw err; // fall through to stale token only if we have one
+    }
+  }
+  if (hasToken) return settings.tidalAccessToken; // best effort — API call will surface real errors
+  throw new Error('Tidal is not connected yet. Open Settings → Tidal and paste your Client ID and Client Secret, then click "CONNECT TIDAL".');
+}
+
+// Start the OAuth flow: build the authorization URL for the browser popup.
+app.post('/api/tidal/auth/start', async (req, res) => {
+  const body = req.body || {};
+  const clientId = (body.clientId || '').trim() || TIDAL_CLIENT_ID;
+  const clientSecret = (body.clientSecret || '').trim();
+
+  if (!clientId) {
+    return res.status(400).json({ error: 'A Tidal Client ID is required. Create one at https://developer.tidal.com/' });
+  }
+
+  // Persist the credentials the user pasted so later steps can use them.
+  currentSettings.tidalApiKey = clientId;
+  currentSettings.tidalApiSecret = clientSecret || currentSettings.tidalApiSecret || '';
+  saveSettings();
+
+  const origin = body.origin || `http://localhost:${PORT}`;
+  const redirectUri = `${origin}/api/tidal/callback`;
+
+  const codeVerifier = b64url(crypto.randomBytes(32));
+  const codeChallenge = b64url(crypto.createHash('sha256').update(codeVerifier).digest());
+  const state = b64url(crypto.randomBytes(16));
+
+  tidalAuthSessions.set(state, { codeVerifier, createdAt: Date.now() });
+  // Clean up old sessions
+  for (const [s, v] of tidalAuthSessions) {
+    if (Date.now() - v.createdAt > 10 * 60 * 1000) tidalAuthSessions.delete(s);
+  }
+
+  const url = `${TIDAL_AUTH_BASE}?${new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    scope: TIDAL_SCOPES,
+    redirect_uri: redirectUri,
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+  })}`;
+
+  res.json({ url });
+});
+
+// OAuth callback — exchanges the code for tokens and closes the popup window.
+app.get('/api/tidal/callback', async (req, res) => {
+  const { code, state, error: oauthError } = req.query;
+  const closePage = (ok, message) => res.type('html').send(`<!doctype html><html><head><title>Tidal</title></head>
+    <body style="background:#0a0a0a;color:${ok ? '#33ff33' : '#ff3333'};font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+    <pre>${ok ? '✔ TIDAL CONNECTED — you can close this window.' : `✘ TIDAL LOGIN FAILED: ${message}\\nYou can close this window.`}</pre>
+    <script>setTimeout(()=>{window.close()},1500);</script></body></html>`);
+
+  if (oauthError) return closePage(false, String(oauthError));
+  if (!code || !state) return closePage(false, 'missing parameters');
+
+  const session = tidalAuthSessions.get(String(state));
+  if (!session) return closePage(false, 'session expired, please try again');
+  tidalAuthSessions.delete(String(state));
+
+  const origin = `${req.protocol}://${req.get('host')}`;
+  try {
+    const tokens = await tidalTokenRequest({
+      grant_type: 'authorization_code',
+      client_id: currentSettings.tidalApiKey || TIDAL_CLIENT_ID,
+      client_secret: currentSettings.tidalApiSecret,
+      code: String(code),
+      redirect_uri: `${origin}/api/tidal/callback`,
+      code_verifier: session.codeVerifier,
+    });
+    storeTidalTokens(tokens);
+    return closePage(true);
+  } catch (err) {
+    return closePage(false, err.message);
+  }
+});
+
+// Polling endpoint used by the UI popup flow.
+app.get('/api/tidal/auth/status', (req, res) => {
+  const connected = !!currentSettings.tidalAccessToken;
+  res.json({
+    connected,
+    userId: connected ? currentSettings.tidalUserId : '',
+    expiresAt: currentSettings.tidalTokenExpiresAt || null,
+  });
+});
+
+// Disconnect / clear Tidal tokens
+app.post('/api/tidal/disconnect', (req, res) => {
+  currentSettings.tidalAccessToken = '';
+  currentSettings.tidalRefreshToken = '';
+  currentSettings.tidalTokenExpiresAt = 0;
+  currentSettings.tidalUserId = '';
+  saveSettings();
+  res.json({ success: true });
+});
 
 // Utility: check if command exists
 async function commandExists(cmd) {
@@ -119,11 +289,9 @@ async function fetchYouTubePlaylist(url) {
 
 // Fetch Tidal playlist using API
 async function fetchTidalPlaylist(url, settings) {
-  const { tidalAccessToken, tidalUserId } = settings;
-  
-  if (!tidalAccessToken) {
-    throw new Error('Tidal access token is required. Please configure it in settings.');
-  }
+  // Obtain a valid access token automatically (refreshes expired tokens in the
+  // background — the user only ever needs to paste Client ID + Client Secret).
+  const tidalAccessToken = await getTidalAccessToken(settings);
 
   // Extract playlist ID from URL
   const playlistIdMatch = url.match(/playlist\/([a-zA-Z0-9-]+)/);
@@ -138,6 +306,20 @@ async function fetchTidalPlaylist(url, settings) {
       'Authorization': `Bearer ${tidalAccessToken}`,
     },
   });
+
+  if (metaResponse.status === 401) {
+    // Token may have been revoked server-side — force one refresh and retry.
+    try {
+      const freshToken = await refreshTidalToken(settings);
+      const retryResponse = await fetch(`https://api.tidal.com/v1/playlists/${playlistId}?countryCode=US`, {
+        headers: { 'Authorization': `Bearer ${freshToken}` },
+      });
+      if (retryResponse.ok) {
+        return finishTidalPlaylistFetch(retryResponse, playlistId, url, freshToken);
+      }
+    } catch {}
+    throw new Error('Tidal rejected the login (HTTP 401). Open Settings → Tidal and click "CONNECT TIDAL" again.');
+  }
 
   if (!metaResponse.ok) {
     throw new Error(`Tidal API error: ${metaResponse.status} ${metaResponse.statusText}`);
@@ -187,6 +369,40 @@ async function fetchTidalPlaylist(url, settings) {
     tidalId: item.id,
   }));
 
+  return {
+    id: uuidv4(),
+    title: meta.title || 'Tidal Playlist',
+    source: 'tidal',
+    url,
+    tracks,
+    totalTracks: tracks.length,
+    completedTracks: 0,
+    status: 'idle',
+  };
+}
+
+// Helper for the 401-retry path above (metadata already fetched OK)
+async function finishTidalPlaylistFetch(metaResponse, playlistId, url, tidalAccessToken) {
+  const meta = await metaResponse.json();
+  const tracksResponse = await fetch(`https://api.tidal.com/v1/playlists/${playlistId}/tracks?countryCode=US&limit=100&offset=0`, {
+    headers: { 'Authorization': `Bearer ${tidalAccessToken}` },
+  });
+  if (!tracksResponse.ok) {
+    throw new Error(`Tidal API error fetching tracks: ${tracksResponse.status}`);
+  }
+  const tracksData = await tracksResponse.json();
+  const tracks = (tracksData.items || []).map((item) => ({
+    id: uuidv4(),
+    title: item.title || 'Unknown',
+    artist: item.artist?.name || item.artists?.map(a => a.name).join(', ') || 'Unknown',
+    album: item.album?.title || '',
+    duration: item.duration || 0,
+    thumbnail: item.album?.cover ? `https://resources.tidal.com/images/${item.album.cover.replace(/-/g, '/')}/320x320.jpg` : '',
+    source: 'tidal',
+    status: 'pending',
+    progress: 0,
+    tidalId: item.id,
+  }));
   return {
     id: uuidv4(),
     title: meta.title || 'Tidal Playlist',

@@ -99,30 +99,35 @@ The application will be available at:
 
 ## ⚙️ Configuration
 
-### Tidal API Setup
+### Tidal Setup (Client ID + Client Secret only)
 
 1. Go to [Tidal Developer Portal](https://developer.tidal.com/)
-2. Create an application to get your API Key and API Secret
-3. Generate an access token (OAuth2 flow)
-4. Enter credentials in the Settings panel of the web UI
+2. Create an application to get your **Client ID** and **Client Secret**
+3. In the app's settings, add this OAuth redirect URI: `http://localhost:3001/api/tidal/callback`
+4. Open the web UI → **[SETTINGS]** → paste the two values into the *TIDAL CONNECTION* card
+5. Click **[CONNECT TIDAL]** — a Tidal login window opens; after you log in, the access
+   token is fetched, saved, and auto-refreshed for you. Nothing else to configure.
 
-### Tidal Access Token
+<details>
+<summary>Advanced: manual access token (optional)</summary>
 
-To get a Tidal access token, you'll need to complete the OAuth2 flow:
+If you prefer, you can still paste an access token directly under
+*[ADVANCED: MANUAL TOKENS]* in the settings card. To generate one via the OAuth2 flow manually:
 
 ```bash
-# Step 1: Get authorization URL (replace YOUR_API_KEY)
-echo "https://login.tidal.com/authorize?response_type=code&client_id=YOUR_API_KEY&redirect_uri=http://localhost:3001/callback&scope=playlist.read+playlists.read&code_challenge_method=S256"
+# Step 1: Get authorization URL (replace YOUR_CLIENT_ID)
+echo "https://login.tidal.com/authorize?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=http://localhost:3001/api/tidal/callback&scope=r.usersonlyplaylists+offline_access&code_challenge_method=S256"
 
 # Step 2: After authorizing, exchange the code for a token
 curl -X POST "https://auth.tidal.com/v1/oauth2/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=authorization_code" \
-  -d "client_id=YOUR_API_KEY" \
-  -d "client_secret=YOUR_API_SECRET" \
+  -d "client_id=YOUR_CLIENT_ID" \
+  -d "client_secret=YOUR_CLIENT_SECRET" \
   -d "code=AUTH_CODE_FROM_STEP_1" \
-  -d "redirect_uri=http://localhost:3001/callback"
+  -d "redirect_uri=http://localhost:3001/api/tidal/callback"
 ```
+</details>
 
 ### Settings
 

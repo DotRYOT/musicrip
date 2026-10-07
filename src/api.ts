@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Playlist, Settings, ServerStatus, Track, DownloadErrorSummary } from './types';
+import type { Playlist, Settings, ServerStatus, Track, DownloadErrorSummary, TidalAuthStatus } from './types';
 
 const API_BASE = '/api';
 
@@ -75,4 +75,24 @@ export const retryTrack = async (trackId: string, jobId: string): Promise<void> 
 
 export const skipTrack = async (trackId: string, jobId: string): Promise<void> => {
   await api.post('/download/skip', { trackId, jobId });
+};
+
+// ─── Tidal one-click connect (only Client ID + Client Secret needed) ──────
+
+export const startTidalAuth = async (clientId: string, clientSecret: string): Promise<{ url: string }> => {
+  const { data } = await api.post('/tidal/auth/start', {
+    clientId,
+    clientSecret,
+    origin: window.location.origin,
+  });
+  return data;
+};
+
+export const getTidalAuthStatus = async (): Promise<TidalAuthStatus> => {
+  const { data } = await api.get('/tidal/auth/status');
+  return data;
+};
+
+export const disconnectTidal = async (): Promise<void> => {
+  await api.post('/tidal/disconnect', {});
 };
