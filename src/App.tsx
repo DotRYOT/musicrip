@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Play, Pause, X, Check, AlertCircle, Loader2, ChevronDown, ChevronUp, Eye, EyeOff, ExternalLink } from 'lucide-react';
 import type { Playlist, Track, Settings, ServerStatus, DownloadErrorSummary, TidalAuthStatus } from './types';
-import { fetchPlaylist, startDownload, getServerStatus, getDownloadProgress, pauseDownload, resumeDownload, cancelDownload, retryTrack, skipTrack, getApiErrorMessage, getSettings, updateSettings, startTidalAuth, getTidalAuthStatus, disconnectTidal } from './api';
+import { fetchPlaylist, startDownload, getServerStatus, getDownloadProgress, pauseDownload, resumeDownload, cancelDownload, retryTrack, skipTrack, getApiErrorMessage, getSettings, updateSettings, startTidalAuth, openTidalAuthInBrowser, getTidalAuthStatus, disconnectTidal } from './api';
 
 function App() {
   const [playlistUrl, setPlaylistUrl] = useState('');
@@ -665,6 +665,7 @@ function TidalConnectCard({ settings, setSettings, tidalStatus, onTidalStatusCha
   const [busyMsg, setBusyMsg] = useState<string | null>(null);
   const [connError, setConnError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [manualAuthUrl, setManualAuthUrl] = useState<string | null>(null);
 
   const connected = !!tidalStatus?.connected;
   const canConnect = settings.tidalApiKey.trim().length > 0 && settings.tidalApiSecret.trim().length > 0;
@@ -697,21 +698,46 @@ function TidalConnectCard({ settings, setSettings, tidalStatus, onTidalStatusCha
 
   const handleConnect = async () => {
     setConnError(null);
-    setBusyMsg('OPENING TIDAL LOGIN...');
+    setBusyMsg('CONTACTING TIDAL...');
     try {
       // Persist pasted credentials first so the server can exchange the code later.
       await updateSettings({ tidalApiKey: settings.tidalApiKey, tidalApiSecret: settings.tidalApiSecret });
       const { url } = await startTidalAuth(settings.tidalApiKey.trim(), settings.tidalApiSecret.trim());
-      const popup = window.open(url, 'tidal-auth', 'width=520,height=720,menubar=no,toolbar=no');
-      if (!popup) {
-        setBusyMsg(null);
-        setConnError('The browser blocked the login popup. Please allow popups for this site and try again.');
-        return;
+
+      // If the UI itself is served from the local backend (http://localhost),
+      // open the login in a popup. Otherwise (e.g. hosted HTTPS page) popups
+      // back to localhost would be blocked as mixed content — ask the server
+      // to open the system's default browser instead.
+      const isLocalHttp = ['localhost', '127.0.0.1'].includes(window.location.hostname) && window.location.protocol === 'http:';
+      let opened = false;
+      if (isLocalHttp) {
+        const popup = window.open(url, 'tidal-auth', 'width=520,height=720,menubar=no,toolbar=no');
+        opened = !!popup;
+        if (!opened) {
+          setConnError('The browser blocked the login popup. Please allow popups for this site and try again.');
+        }
+      } else {
+        try {
+          await openTidalAuthInBrowser(settings.tidalApiKey.trim(), settings.tidalApiSecret.trim());
+          opened = true;
+        } catch {
+          // Server couldn't launch a browser — fall through to manual link.
+        }
+        if (!opened) {
+          setConnError('Could not open your browser automatically. Copy the URL shown below and open it manually.');
+        }
       }
-      setConnecting(true);
-      setBusyMsg('WAITING FOR TIDAL LOGIN...');
+
+      setManualAuthUrl(url);
+      if (opened) {
+        setConnecting(true);
+        setBusyMsg(isLocalHttp ? 'WAITING FOR TIDAL LOGIN...' : 'CHECK YOUR BROWSER FOR THE TIDAL LOGIN PAGE...');
+      } else {
+        setBusyMsg(null);
+      }
     } catch (err: any) {
       setBusyMsg(null);
+      setManualAuthUrl(null);
       setConnError(getApiErrorMessage(err, 'Failed to start the Tidal login flow.'));
     }
   };
@@ -830,6 +856,39 @@ function TidalConnectCard({ settings, setSettings, tidalStatus, onTidalStatusCha
         </div>
       )}
 
+      {manualAuthUrl && !connected && (
+        <div className="mt-2 text-[10px] border border-[#1a3a1a] p-2">
+          <span className="text-[#33aaff]">TIDAL LOGIN URL — open it in your browser to sign in:</span>
+          <div className="flex items-center gap-2 mt-1">
+            <input
+              readOnly
+              value={manualAuthUrl}
+              onFocus={(e) => e.target.select()}
+              className="flex-1 px-2 py-1 ascii-input text-[9px]"
+            />
+            <button
+              onClick={() => navigator.clipboard.writeText(manualAuthUrl)}
+              className="ascii-btn px-2 py-1 text-[9px] whitespace-nowrap"
+            >
+              [COPY]
+            </button>
+            <a
+              href={manualAuthUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="ascii-btn px-2 py-1 text-[9px] whitespace-nowrap inline-block"
+            >
+              [OPEN]
+            </a>
+          </div>
+          <p className="text-[#1a3a1a] mt-1">
+            IMPORTANT: the redirect URI registered in your Tidal developer app must be exactly{' '}
+            <code className="text-[#33ff33]">http://localhost:3001/api/tidal/callback</code>
+            {' '}(plain http, port 3001). A mismatch causes Tidal's "Something went wrong" error.
+          </p>
+        </div>
+      )}
+
       <p className="text-[10px] text-[#1a3a1a] mt-2">
         Get credentials:{' '}
         <a
@@ -841,7 +900,7 @@ function TidalConnectCard({ settings, setSettings, tidalStatus, onTidalStatusCha
           developer.tidal.com <ExternalLink className="w-3 h-3" />
         </a>
         {' '}→ create an app → copy Client ID &amp; Secret. Add redirect URL{' '}
-        <code className="text-[#33ff33]">{`${window.location.origin}/api/tidal/callback`}</code> to your app.
+        <code className="text-[#33ff33]">http://localhost:3001/api/tidal/callback</code> to your app.
       </p>
 
       {/* Advanced: manual tokens (unchanged behavior, just collapsed away) */}

@@ -1,1 +1,5 @@
-(empty)
+# Build artifacts
+dist/
+
+# Editor settings
+.settings.json
