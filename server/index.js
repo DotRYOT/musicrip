@@ -125,28 +125,26 @@ async function getTidalAccessToken(settings) {
 }
 
 // Start the OAuth flow: build the authorization URL for the browser popup.
-app.post('/api/tidal/auth/start', async (req, res) => {
-  const body = req.body || {};
-  const clientId = (body.clientId || '').trim() || TIDAL_CLIENT_ID;
-  const clientSecret = (body.clientSecret || '').trim();
-
+// NOTE: Tidal's login page rejects unknown query parameters with a generic
+// "Something went wrong" error — send ONLY the required OAuth2 PKCE params.
+async function buildTidalAuthUrl(clientId, clientSecret) {
   if (!clientId) {
-    return res.status(400).json({ error: 'A Tidal Client ID is required. Create one at https://developer.tidal.com/' });
+    throw new Error('A Tidal Client ID is required. Create one at https://developer.tidal.com/');
   }
 
-  // Persist the credentials the user pasted so later steps can use them.
+  // Persist the credentials so the callback step can exchange the code.
   currentSettings.tidalApiKey = clientId;
   currentSettings.tidalApiSecret = clientSecret || currentSettings.tidalApiSecret || '';
   saveSettings();
 
-  const origin = body.origin || `http://localhost:${PORT}`;
+  const origin = `http://localhost:${PORT}`;
   const redirectUri = `${origin}/api/tidal/callback`;
 
   const codeVerifier = b64url(crypto.randomBytes(32));
   const codeChallenge = b64url(crypto.createHash('sha256').update(codeVerifier).digest());
   const state = b64url(crypto.randomBytes(16));
 
-  tidalAuthSessions.set(state, { codeVerifier, createdAt: Date.now() });
+  tidalAuthSessions.set(state, { codeVerifier, createdAt: Date.now(), clientId, clientSecret: currentSettings.tidalApiSecret });
   // Clean up old sessions
   for (const [s, v] of tidalAuthSessions) {
     if (Date.now() - v.createdAt > 10 * 60 * 1000) tidalAuthSessions.delete(s);
@@ -155,14 +153,65 @@ app.post('/api/tidal/auth/start', async (req, res) => {
   const url = `${TIDAL_AUTH_BASE}?${new URLSearchParams({
     response_type: 'code',
     client_id: clientId,
-    scope: TIDAL_SCOPES,
+    energy_saving_scopes: 'true',
     redirect_uri: redirectUri,
+    scope: TIDAL_SCOPES,
     state,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
   })}`;
 
-  res.json({ url });
+  // Validate the client id against Tidal's OAuth endpoint BEFORE opening the
+  // popup, so a bad/wrong Client ID shows a clear error instead of Tidal's
+  // cryptic "Something went wrong" login page.
+  try {
+    await tidalTokenRequest({
+      grant_type: 'client_credentials',
+      client_id: clientId,
+      client_secret: clientSecret || '',
+      scope: TIDAL_SCOPES,
+    });
+  } catch (err) {
+    const msg = String(err.message || '');
+    if (/invalid_client|unauthorized|bad request/i.test(msg)) {
+      throw new Error(
+        'Tidal rejected these credentials (HTTP 401). Double-check that you pasted the CLIENT ID and CLIENT SECRET from the same app at developer.tidal.com → your app → Credentials, with no extra spaces.'
+      );
+    }
+    // Network / transient errors shouldn't block the flow.
+  }
+
+  return url;
+}
+
+app.post('/api/tidal/auth/start', async (req, res) => {
+  const body = req.body || {};
+  const clientId = (body.clientId || '').trim() || currentSettings.tidalApiKey || TIDAL_CLIENT_ID;
+  const clientSecret = (body.clientSecret || '').trim();
+  try {
+    const url = await buildTidalAuthUrl(clientId, clientSecret);
+    res.json({ url });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Server-side login: open the auth URL directly in the DEFAULT browser
+// (no popup — avoids CORS/popup issues when the UI is served over HTTPS).
+app.post('/api/tidal/auth/open-browser', async (req, res) => {
+  const body = req.body || {};
+  const clientId = (body.clientId || '').trim() || currentSettings.tidalApiKey || TIDAL_CLIENT_ID;
+  const clientSecret = (body.clientSecret || '').trim();
+  try {
+    const url = await buildTidalAuthUrl(clientId, clientSecret);
+    const opener = process.platform === 'darwin' ? 'open'
+      : process.platform === 'win32' ? 'start'
+      : 'xdg-open';
+    exec(`${opener} "${url}"`, () => {});
+    res.json({ success: true, url });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // OAuth callback — exchanges the code for tokens and closes the popup window.
@@ -180,14 +229,14 @@ app.get('/api/tidal/callback', async (req, res) => {
   if (!session) return closePage(false, 'session expired, please try again');
   tidalAuthSessions.delete(String(state));
 
-  const origin = `${req.protocol}://${req.get('host')}`;
   try {
     const tokens = await tidalTokenRequest({
       grant_type: 'authorization_code',
-      client_id: currentSettings.tidalApiKey || TIDAL_CLIENT_ID,
-      client_secret: currentSettings.tidalApiSecret,
+      client_id: session.clientId || currentSettings.tidalApiKey || TIDAL_CLIENT_ID,
+      client_secret: session.clientSecret || currentSettings.tidalApiSecret,
       code: String(code),
-      redirect_uri: `${origin}/api/tidal/callback`,
+      // Must be byte-for-byte identical to the redirect_uri sent to /authorize.
+      redirect_uri: `http://localhost:${PORT}/api/tidal/callback`,
       code_verifier: session.codeVerifier,
     });
     storeTidalTokens(tokens);
