@@ -41,10 +41,18 @@ export interface Settings {
   tidalApiKey: string;
   tidalApiSecret: string;
   tidalAccessToken: string;
+  tidalRefreshToken?: string;
+  tidalTokenExpiresAt?: number;
   tidalUserId: string;
   embedMetadata: boolean;
   embedThumbnail: boolean;
   namingTemplate: string;
+}
+
+export interface TidalAuthStatus {
+  connected: boolean;
+  userId: string;
+  expiresAt: number | null;
 }
 
 export interface ServerStatus {

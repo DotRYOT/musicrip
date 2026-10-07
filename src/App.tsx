@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Play, Pause, X, Check, AlertCircle, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
-import type { Playlist, Track, Settings, ServerStatus, DownloadErrorSummary } from './types';
-import { fetchPlaylist, startDownload, getServerStatus, getDownloadProgress, pauseDownload, resumeDownload, cancelDownload, retryTrack, skipTrack, getApiErrorMessage } from './api';
+import { RefreshCw, Play, Pause, X, Check, AlertCircle, Loader2, ChevronDown, ChevronUp, Eye, EyeOff, ExternalLink } from 'lucide-react';
+import type { Playlist, Track, Settings, ServerStatus, DownloadErrorSummary, TidalAuthStatus } from './types';
+import { fetchPlaylist, startDownload, getServerStatus, getDownloadProgress, pauseDownload, resumeDownload, cancelDownload, retryTrack, skipTrack, getApiErrorMessage, getSettings, updateSettings, startTidalAuth, getTidalAuthStatus, disconnectTidal } from './api';
 
 function App() {
   const [playlistUrl, setPlaylistUrl] = useState('');
@@ -18,6 +18,7 @@ function App() {
     embedThumbnail: true,
     namingTemplate: '{artist} - {title}',
   });
+  const [tidalStatus, setTidalStatus] = useState<TidalAuthStatus | null>(null);
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -49,6 +50,23 @@ function App() {
     const interval = setInterval(checkServerStatus, 10000);
     return () => clearInterval(interval);
   }, [checkServerStatus]);
+
+  // Load saved settings + Tidal connection state from the server on startup
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await getSettings();
+        setSettings(prev => ({ ...prev, ...saved }));
+      } catch {
+        // server offline — keep defaults
+      }
+      try {
+        setTidalStatus(await getTidalAuthStatus());
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     if (!jobId || !isDownloading || isPaused) return;
@@ -211,7 +229,12 @@ function App() {
 
         {/* Settings Panel */}
         {showSettings && (
-          <SettingsPanel settings={settings} setSettings={setSettings} />
+          <SettingsPanel
+            settings={settings}
+            setSettings={setSettings}
+            tidalStatus={tidalStatus}
+            onTidalStatusChange={setTidalStatus}
+          />
         )}
 
         {/* Playlist Input */}
@@ -533,7 +556,12 @@ function ServerStatusBadge({ status }: { status: ServerStatus | null }) {
   );
 }
 
-function SettingsPanel({ settings, setSettings }: { settings: Settings; setSettings: (s: Settings) => void }) {
+function SettingsPanel({ settings, setSettings, tidalStatus, onTidalStatusChange }: {
+  settings: Settings;
+  setSettings: (s: Settings) => void;
+  tidalStatus: TidalAuthStatus | null;
+  onTidalStatusChange: (s: TidalAuthStatus | null) => void;
+}) {
   return (
     <div className="ascii-border p-4">
       <pre className="text-xs mb-4 glow">
@@ -594,47 +622,12 @@ function SettingsPanel({ settings, setSettings }: { settings: Settings; setSetti
         </div>
 
         <div className="md:col-span-2">
-          <pre className="text-xs text-[#33ff33] mb-2 glow">
-{`┌─ TIDAL API CREDENTIALS ─────────────────┐`}
-          </pre>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[10px] text-[#1a3a1a] mb-1">API KEY:</label>
-              <input
-                type="password"
-                value={settings.tidalApiKey}
-                onChange={(e) => setSettings({ ...settings, tidalApiKey: e.target.value })}
-                className="w-full px-3 py-2 ascii-input text-xs"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] text-[#1a3a1a] mb-1">API SECRET:</label>
-              <input
-                type="password"
-                value={settings.tidalApiSecret}
-                onChange={(e) => setSettings({ ...settings, tidalApiSecret: e.target.value })}
-                className="w-full px-3 py-2 ascii-input text-xs"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] text-[#1a3a1a] mb-1">ACCESS TOKEN:</label>
-              <input
-                type="password"
-                value={settings.tidalAccessToken}
-                onChange={(e) => setSettings({ ...settings, tidalAccessToken: e.target.value })}
-                className="w-full px-3 py-2 ascii-input text-xs"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] text-[#1a3a1a] mb-1">USER ID:</label>
-              <input
-                type="text"
-                value={settings.tidalUserId}
-                onChange={(e) => setSettings({ ...settings, tidalUserId: e.target.value })}
-                className="w-full px-3 py-2 ascii-input text-xs"
-              />
-            </div>
-          </div>
+          <TidalConnectCard
+            settings={settings}
+            setSettings={setSettings}
+            tidalStatus={tidalStatus}
+            onTidalStatusChange={onTidalStatusChange}
+          />
         </div>
 
         <div className="md:col-span-2 flex items-center gap-6">
@@ -656,6 +649,235 @@ function SettingsPanel({ settings, setSettings }: { settings: Settings; setSetti
           </label>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Tidal "paste two fields and click connect" card ──────────────────────
+function TidalConnectCard({ settings, setSettings, tidalStatus, onTidalStatusChange }: {
+  settings: Settings;
+  setSettings: (s: Settings) => void;
+  tidalStatus: TidalAuthStatus | null;
+  onTidalStatusChange: (s: TidalAuthStatus | null) => void;
+}) {
+  const [showSecret, setShowSecret] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [busyMsg, setBusyMsg] = useState<string | null>(null);
+  const [connError, setConnError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const connected = !!tidalStatus?.connected;
+  const canConnect = settings.tidalApiKey.trim().length > 0 && settings.tidalApiSecret.trim().length > 0;
+
+  const pollTidalStatus = useCallback(async () => {
+    try {
+      onTidalStatusChange(await getTidalAuthStatus());
+    } catch {
+      // server offline
+    }
+  }, [onTidalStatusChange]);
+
+  useEffect(() => {
+    if (!connecting) return;
+    const interval = setInterval(pollTidalStatus, 1000);
+    return () => clearInterval(interval);
+  }, [connecting, pollTidalStatus]);
+
+  const handleSave = async () => {
+    setConnError(null);
+    setBusyMsg('SAVING...');
+    try {
+      await updateSettings({ tidalApiKey: settings.tidalApiKey, tidalApiSecret: settings.tidalApiSecret });
+      setBusyMsg(null);
+    } catch (err: any) {
+      setBusyMsg(null);
+      setConnError(getApiErrorMessage(err, 'Could not save credentials — is the backend server running?'));
+    }
+  };
+
+  const handleConnect = async () => {
+    setConnError(null);
+    setBusyMsg('OPENING TIDAL LOGIN...');
+    try {
+      // Persist pasted credentials first so the server can exchange the code later.
+      await updateSettings({ tidalApiKey: settings.tidalApiKey, tidalApiSecret: settings.tidalApiSecret });
+      const { url } = await startTidalAuth(settings.tidalApiKey.trim(), settings.tidalApiSecret.trim());
+      const popup = window.open(url, 'tidal-auth', 'width=520,height=720,menubar=no,toolbar=no');
+      if (!popup) {
+        setBusyMsg(null);
+        setConnError('The browser blocked the login popup. Please allow popups for this site and try again.');
+        return;
+      }
+      setConnecting(true);
+      setBusyMsg('WAITING FOR TIDAL LOGIN...');
+    } catch (err: any) {
+      setBusyMsg(null);
+      setConnError(getApiErrorMessage(err, 'Failed to start the Tidal login flow.'));
+    }
+  };
+
+  // Once the status flips to connected, stop the spinner.
+  useEffect(() => {
+    if (connecting && connected) {
+      setConnecting(false);
+      setBusyMsg(null);
+    }
+  }, [connecting, connected]);
+
+  const handleDisconnect = async () => {
+    setConnError(null);
+    try {
+      await disconnectTidal();
+      onTidalStatusChange({ connected: false, userId: '', expiresAt: null });
+    } catch (err: any) {
+      setConnError(getApiErrorMessage(err, 'Failed to disconnect.'));
+    }
+  };
+
+  return (
+    <div className={`ascii-border p-4 ${connected ? 'border-[#33ff33]' : 'border-[#1a3a1a]'}`}>
+      <pre className="text-xs mb-2 glow">
+{`┌─ TIDAL CONNECTION ──────────────────────┐`}
+      </pre>
+
+      {/* Status line */}
+      <div className="flex items-center justify-between mb-3">
+        <div className={`flex items-center gap-2 text-xs ${connected ? 'text-[#33ff33]' : 'text-[#ffaa00]'}`}>
+          <div className={`w-2 h-2 ${connected ? 'bg-[#33ff33]' : 'bg-[#ffaa00] blink'}`} />
+          {connected
+            ? <>CONNECTED {tidalStatus?.userId ? `• USER ID: ${tidalStatus.userId}` : ''}</>
+            : 'NOT CONNECTED'}
+        </div>
+        {connected && (
+          <button
+            onClick={handleDisconnect}
+            className="text-[10px] text-[#ff3333] hover:text-[#ff6666] underline"
+          >
+            [DISCONNECT]
+          </button>
+        )}
+      </div>
+
+      {/* The only two fields the user needs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-[10px] text-[#1a3a1a] mb-1">CLIENT ID:</label>
+          <input
+            type="text"
+            value={settings.tidalApiKey}
+            onChange={(e) => setSettings({ ...settings, tidalApiKey: e.target.value })}
+            placeholder="Paste your Client ID..."
+            autoComplete="off"
+            spellCheck={false}
+            className="w-full px-3 py-2 ascii-input text-xs"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] text-[#1a3a1a] mb-1">CLIENT SECRET:</label>
+          <div className="relative">
+            <input
+              type={showSecret ? 'text' : 'password'}
+              value={settings.tidalApiSecret}
+              onChange={(e) => setSettings({ ...settings, tidalApiSecret: e.target.value })}
+              placeholder="Paste your Client Secret..."
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full px-3 py-2 pr-9 ascii-input text-xs"
+            />
+            <button
+              type="button"
+              onClick={() => setShowSecret(!showSecret)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[#1a3a1a] hover:text-[#33ff33]"
+              title={showSecret ? 'Hide' : 'Show'}
+            >
+              {showSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button
+          onClick={handleConnect}
+          disabled={!canConnect || connecting}
+          className="ascii-btn px-4 py-2 text-xs flex items-center gap-2 disabled:opacity-40"
+        >
+          {connecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ExternalLink className="w-3.5 h-3.5" />}
+          {connecting ? '[CONNECTING...]' : '[CONNECT TIDAL]'}
+        </button>
+        <button
+          onClick={handleSave}
+          className="ascii-btn px-4 py-2 text-xs"
+          title="Save credentials without reconnecting"
+        >
+          [SAVE]
+        </button>
+        {busyMsg && <span className="text-[10px] text-[#33aaff]">{busyMsg}</span>}
+      </div>
+
+      {!canConnect && !connected && (
+        <p className="text-[10px] text-[#1a3a1a] mt-2">
+          Paste both values above, then click [CONNECT TIDAL] and log in with your Tidal account.
+          The access token is obtained automatically — you don't need to touch it.
+        </p>
+      )}
+
+      {connError && (
+        <div className="mt-2 text-[10px] text-[#ff3333] flex items-start gap-2">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+          <span>{connError}</span>
+        </div>
+      )}
+
+      <p className="text-[10px] text-[#1a3a1a] mt-2">
+        Get credentials:{' '}
+        <a
+          href="https://developer.tidal.com/"
+          target="_blank"
+          rel="noreferrer"
+          className="text-[#33aaff] hover:underline inline-flex items-center gap-1"
+        >
+          developer.tidal.com <ExternalLink className="w-3 h-3" />
+        </a>
+        {' '}→ create an app → copy Client ID &amp; Secret. Add redirect URL{' '}
+        <code className="text-[#33ff33]">{`${window.location.origin}/api/tidal/callback`}</code> to your app.
+      </p>
+
+      {/* Advanced: manual tokens (unchanged behavior, just collapsed away) */}
+      <button
+        onClick={() => setShowAdvanced(!showAdvanced)}
+        className="mt-3 text-[10px] text-[#1a3a1a] hover:text-[#33ff33] flex items-center gap-1"
+      >
+        {showAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+        [ADVANCED: MANUAL TOKENS]
+      </button>
+      {showAdvanced && (
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-[#1a3a1a] pt-3">
+          <div>
+            <label className="block text-[10px] text-[#1a3a1a] mb-1">ACCESS TOKEN (OPTIONAL):</label>
+            <input
+              type="password"
+              value={settings.tidalAccessToken}
+              onChange={(e) => setSettings({ ...settings, tidalAccessToken: e.target.value })}
+              className="w-full px-3 py-2 ascii-input text-xs"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] text-[#1a3a1a] mb-1">USER ID (OPTIONAL):</label>
+            <input
+              type="text"
+              value={settings.tidalUserId}
+              onChange={(e) => setSettings({ ...settings, tidalUserId: e.target.value })}
+              className="w-full px-3 py-2 ascii-input text-xs"
+            />
+          </div>
+          <p className="sm:col-span-2 text-[10px] text-[#1a3a1a]">
+            Only needed if you want to bypass the automatic login above. Tokens entered here are used
+            until they expire, after which the automatic refresh takes over if a Client Secret is set.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
