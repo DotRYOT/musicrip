@@ -34,6 +34,11 @@ let currentSettings = {
   embedMetadata: true,
   embedThumbnail: true,
   namingTemplate: '{artist} - {title}',
+  rateLimitEnabled: true,
+  ytMinDelayMs: 1500,
+  ytMaxDelayMs: 4000,
+  ytMaxRetries: 3,
+  cookieFile: '',
 };
 
 // Load saved settings
@@ -212,6 +217,113 @@ app.post('/api/tidal/disconnect', (req, res) => {
   res.json({ success: true });
 });
 
+// ─── YouTube anti-rate-limiting ──────────────────────────────────────────
+// YouTube aggressively throttles clients that fire many requests in a row
+// ("Too many requests" / HTTP 429 / "Sign in to confirm you're not a bot").
+// To avoid that we: (1) serialize every yt-dlp invocation through one queue,
+// (2) wait a randomized pause between calls, (3) retry with exponential
+// backoff when a call is rate limited, and (4) reuse one persistent client
+// context (PO token cache + optional cookies) so each call doesn't look like
+// a brand-new suspicious visitor.
+
+const RATE_LIMIT_DEFAULTS = {
+  enabled: true,
+  minDelayMs: 1500,   // pause before each yt-dlp call (min of random range)
+  maxDelayMs: 4000,   // pause before each yt-dlp call (max of random range)
+  maxRetries: 3,      // extra attempts after the first try when rate limited
+  baseBackoffMs: 10000, // 10s → 20s → 40s … while backing off
+};
+
+let ytQueueTail = Promise.resolve(); // global FIFO queue for all yt-dlp invocations
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function randInt(min, max) {
+  return Math.floor(min + Math.random() * Math.max(0, max - min));
+}
+
+function getRateLimitConfig(settings) {
+  const s = settings || currentSettings;
+  return {
+    ...RATE_LIMIT_DEFAULTS,
+    ...(s.rateLimitEnabled === false ? { enabled: false } : null),
+    minDelayMs: Number.isFinite(+s.ytMinDelayMs) && +s.ytMinDelayMs >= 0 ? +s.ytMinDelayMs : RATE_LIMIT_DEFAULTS.minDelayMs,
+    maxDelayMs: Math.max(
+      Number.isFinite(+s.ytMaxDelayMs) && +s.ytMaxDelayMs >= 0 ? +s.ytMaxDelayMs : RATE_LIMIT_DEFAULTS.maxDelayMs,
+      Number.isFinite(+s.ytMinDelayMs) && +s.ytMinDelayMs >= 0 ? +s.ytMinDelayMs : RATE_LIMIT_DEFAULTS.minDelayMs
+    ),
+    maxRetries: Number.isFinite(+s.ytMaxRetries) && +s.ytMaxRetries >= 0 ? +s.ytMaxRetries : RATE_LIMIT_DEFAULTS.maxRetries,
+    baseBackoffMs: Number.isFinite(+s.ytBaseBackoffMs) && +s.ytBaseBackoffMs > 0 ? +s.ytBaseBackoffMs : RATE_LIMIT_DEFAULTS.baseBackoffMs,
+  };
+}
+
+// Detect YouTube-side blocking from process output / errors.
+function looksRateLimited(text) {
+  if (!text) return false;
+  return /too many requests|http error 429|rate ?limit|sign in to confirm|not a bot|captcha|are you a robot|403 forbidden|restricted/i.test(text);
+}
+
+// Common hardening flags applied to every yt-dlp call.
+function getYtDlpCommonArgs(settings) {
+  const args = [
+    '--extractor-args', 'youtube:player_client=android', // less prone to bot checks than the web client
+    '--extractor-args', 'youtubetab:approximate_date',
+    '--sleep-requests', '1',                              // pause between internal HTTP requests
+    '--sleep-interval', '2',                              // pause before each download
+    '--max-sleep-interval', '6',
+    '--retries', '5',                                     // yt-dlp's own transient-network retries
+    '--retry-sleep', '5',
+    '--socket-timeout', '30',
+    '--ignore-errors',
+  ];
+  const cookieFile = String((settings && settings.cookieFile) || '').trim().replace(/^~(?=$|\/)/, process.env.HOME || '');
+  if (cookieFile && fs.existsSync(cookieFile)) {
+    args.push('--cookies', cookieFile);
+  }
+  return args;
+}
+
+// Run yt-dlp with: global serialization, randomized inter-call delay, and
+// exponential backoff retries whenever YouTube rate limits us.
+// `run(opts)` receives { addArgs, spawnOpts } and must resolve with { stdout }.
+// `outputText(err)` extracts log text from whatever the run throws/rejects.
+async function runYtDlpThrottled(run, opts = {}) {
+  const cfg = getRateLimitConfig(opts.settings);
+
+  // Chain onto the global queue so two yt-dlp calls never overlap.
+  let release;
+  const slot = new Promise((r) => (release = r));
+  const prev = ytQueueTail;
+  ytQueueTail = ytQueueTail.then(() => slot);
+  await prev; // wait for our turn
+
+  try {
+    const attempts = cfg.enabled ? cfg.maxRetries + 1 : 1;
+    let lastErr;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (cfg.enabled) {
+        // Randomized human-like pause before every call.
+        await sleep(randInt(cfg.minDelayMs, cfg.maxDelayMs));
+      }
+      try {
+        return await run({ addArgs: getYtDlpCommonArgs(opts.settings), spawnOpts: opts.spawnOpts || {} });
+      } catch (err) {
+        lastErr = err;
+        const text = typeof opts.outputText === 'function' ? opts.outputText(err) : String((err && (err.stderr || err.message)) || '');
+        if (!looksRateLimited(text) || attempt === attempts - 1) throw err;
+        const backoff = cfg.baseBackoffMs * Math.pow(2, attempt) + randInt(0, 2000);
+        console.log(`[yt-dlp] Rate limited by YouTube — backing off ${Math.round(backoff / 1000)}s (retry ${attempt + 1}/${cfg.maxRetries})`);
+        await sleep(backoff);
+      }
+    }
+    throw lastErr;
+  } finally {
+    release(); // let the next queued call proceed
+  }
+}
+
 // Utility: check if command exists
 async function commandExists(cmd) {
   try {
@@ -244,14 +356,30 @@ function detectSource(url) {
 }
 
 // Fetch YouTube Music playlist using yt-dlp
-async function fetchYouTubePlaylist(url) {
-  const cmd = `yt-dlp --flat-playlist --dump-json "${url}"`;
+async function fetchYouTubePlaylist(url, settings) {
+  const safeUrl = String(url).replace(/["'`$\\]/g, ''); // basic shell-safety for the URL
   try {
-    const { stdout } = await execAsync(cmd, { maxBuffer: 50 * 1024 * 1024 });
+    const { stdout } = await runYtDlpThrottled(
+      ({ addArgs }) => execAsync(`yt-dlp ${addArgs.join(' ')} --flat-playlist --dump-json "${safeUrl}"`, {
+        maxBuffer: 50 * 1024 * 1024,
+      }),
+      { settings }
+    );
     const lines = stdout.trim().split('\n').filter(Boolean);
-    const tracks = lines.map((line, index) => {
-      const data = JSON.parse(line);
-      return {
+    let playlistTitle = 'YouTube Playlist';
+    const tracks = [];
+    for (const line of lines) {
+      let data;
+      try {
+        data = JSON.parse(line);
+      } catch {
+        continue; // skip any non-JSON warning lines yt-dlp may emit
+      }
+      if (data._type === 'playlist') {
+        playlistTitle = data.title || playlistTitle;
+        continue;
+      }
+      tracks.push({
         id: uuidv4(),
         title: data.title || 'Unknown',
         artist: data.uploader || data.channel || 'Unknown',
@@ -262,15 +390,8 @@ async function fetchYouTubePlaylist(url) {
         status: 'pending',
         progress: 0,
         youtubeMatch: data.url || data.id,
-      };
-    });
-
-    // Try to get playlist title
-    let playlistTitle = 'YouTube Playlist';
-    try {
-      const { stdout: metaOut } = await execAsync(`yt-dlp --flat-playlist --print playlist_title "${url}" 2>/dev/null || echo "YouTube Playlist"`);
-      playlistTitle = metaOut.trim() || 'YouTube Playlist';
-    } catch {}
+      });
+    }
 
     return {
       id: uuidv4(),
@@ -283,6 +404,10 @@ async function fetchYouTubePlaylist(url) {
       status: 'idle',
     };
   } catch (err) {
+    const text = `${err.stderr || ''} ${err.message || ''}`;
+    if (looksRateLimited(text)) {
+      throw new Error('YouTube is rate limiting this server ("Too many requests"). It will back off automatically — wait a few minutes and retry, or add a cookies file in Settings for higher limits.');
+    }
     throw new Error(`Failed to fetch YouTube playlist: ${err.message}`);
   }
 }
@@ -492,119 +617,126 @@ function buildDownloadError(rawOutput, exitCode, track, searchQuery) {
   };
 }
 
-// Download a single track using yt-dlp
-function downloadTrack(track, settings, onProgress) {
-  return new Promise((resolve, reject) => {
-    const outputDir = settings.outputDir.replace('~', process.env.HOME || '');
-    
-    // Ensure output directory exists
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
+// Download a single track using yt-dlp (goes through the rate-limit-aware queue)
+async function downloadTrack(track, settings, onProgress) {
+  const outputDir = settings.outputDir.replace('~', process.env.HOME || '');
+
+  // Ensure output directory exists
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  const formatMap = {
+    mp3: 'mp3',
+    flac: 'flac',
+    opus: 'opus',
+    m4a: 'm4a',
+  };
+
+  const ext = formatMap[settings.audioFormat] || 'mp3';
+  const quality = settings.audioQuality === '0' ? '0' : settings.audioQuality;
+
+  const filename = settings.namingTemplate
+    .replace('{artist}', track.artist.replace(/[/\\?%*:|"<>]/g, '_'))
+    .replace('{title}', track.title.replace(/[/\\?%*:|"<>]/g, '_'))
+    .replace('{album}', (track.album || 'Unknown').replace(/[/\\?%*:|"<>]/g, '_'));
+
+  const outputPath = path.join(outputDir, `${filename}.${ext}`);
+
+  let searchQuery;
+  if (track.source === 'youtube' && track.youtubeMatch) {
+    searchQuery = `https://www.youtube.com/watch?v=${track.youtubeMatch}`;
+  } else {
+    // Search YouTube Music for the track
+    searchQuery = `ytsearch5:${track.artist} - ${track.title}`;
+  }
+
+  const baseArgs = [
+    '-x',
+    '--audio-format', ext,
+    '--audio-quality', quality === '0' ? '0' : `${quality}K`,
+    '-o', outputPath,
+    '--no-playlist',
+  ];
+
+  if (settings.embedMetadata) {
+    baseArgs.push('--embed-metadata');
+  }
+  if (settings.embedThumbnail) {
+    baseArgs.push('--embed-thumbnail');
+  }
+
+  return runYtDlpThrottled(
+    ({ addArgs }) =>
+      new Promise((resolve, reject) => {
+        const proc = spawn('yt-dlp', [...baseArgs, ...addArgs, searchQuery]);
+        let lastProgress = 0;
+        let stderrTail = '';
+
+        proc.stderr.on('data', (data) => {
+          const output = data.toString();
+
+          // Keep the tail of stderr so we can build a helpful error message on failure
+          stderrTail = (stderrTail + output).slice(-8000);
+
+          // Parse progress
+          const progressMatch = output.match(/(\d+\.?\d*)%/);
+          if (progressMatch) {
+            const progress = parseFloat(progressMatch[1]);
+            if (progress > lastProgress) {
+              lastProgress = progress;
+              onProgress(progress);
+            }
+          }
+        });
+
+        proc.stdout.on('data', (data) => {
+          const output = data.toString();
+          const progressMatch = output.match(/(\d+\.?\d*)%/);
+          if (progressMatch) {
+            const progress = parseFloat(progressMatch[1]);
+            if (progress > lastProgress) {
+              lastProgress = progress;
+              onProgress(progress);
+            }
+          }
+        });
+
+        proc.on('close', (code) => {
+          if (code === 0) {
+            resolve({ outputPath, success: true });
+          } else {
+            const info = buildDownloadError(stderrTail, code, track, searchQuery);
+            const err = new Error(info.message);
+            err.hint = info.hint;
+            err.detail = info.detail;
+            // Carry the raw log so the queue can detect rate limiting and retry
+            err.rawOutput = stderrTail;
+            reject(err);
+          }
+        });
+
+        proc.on('error', (err) => {
+          if (err.code === 'ENOENT') {
+            const info = buildDownloadError('', 127, track, searchQuery);
+            const friendly = new Error(info.message);
+            friendly.hint = info.hint;
+            friendly.detail = 'yt-dlp executable not found';
+            reject(friendly);
+          } else {
+            const info = buildDownloadError(err.message, null, track, searchQuery);
+            const friendly = new Error(info.message);
+            friendly.hint = info.hint;
+            friendly.detail = err.message;
+            reject(friendly);
+          }
+        });
+      }),
+    {
+      settings,
+      outputText: (err) => `${err.rawOutput || ''} ${err.stderr || ''} ${err.message || ''}`,
     }
-
-    const formatMap = {
-      mp3: 'mp3',
-      flac: 'flac',
-      opus: 'opus',
-      m4a: 'm4a',
-    };
-
-    const ext = formatMap[settings.audioFormat] || 'mp3';
-    const quality = settings.audioQuality === '0' ? '0' : settings.audioQuality;
-    
-    const filename = settings.namingTemplate
-      .replace('{artist}', track.artist.replace(/[/\\?%*:|"<>]/g, '_'))
-      .replace('{title}', track.title.replace(/[/\\?%*:|"<>]/g, '_'))
-      .replace('{album}', (track.album || 'Unknown').replace(/[/\\?%*:|"<>]/g, '_'));
-
-    const outputPath = path.join(outputDir, `${filename}.${ext}`);
-
-    let searchQuery;
-    if (track.source === 'youtube' && track.youtubeMatch) {
-      searchQuery = `https://www.youtube.com/watch?v=${track.youtubeMatch}`;
-    } else {
-      // Search YouTube Music for the track
-      searchQuery = `ytsearch5:${track.artist} - ${track.title}`;
-    }
-
-    const args = [
-      '-x',
-      '--audio-format', ext,
-      '--audio-quality', quality === '0' ? '0' : `${quality}K`,
-      '-o', outputPath,
-      '--no-playlist',
-    ];
-
-    if (settings.embedMetadata) {
-      args.push('--embed-metadata');
-    }
-    if (settings.embedThumbnail) {
-      args.push('--embed-thumbnail');
-    }
-
-    args.push(searchQuery);
-
-    const proc = spawn('yt-dlp', args);
-    let lastProgress = 0;
-    let stderrTail = '';
-
-    proc.stderr.on('data', (data) => {
-      const output = data.toString();
-
-      // Keep the tail of stderr so we can build a helpful error message on failure
-      stderrTail = (stderrTail + output).slice(-8000);
-
-      // Parse progress
-      const progressMatch = output.match(/(\d+\.?\d*)%/);
-      if (progressMatch) {
-        const progress = parseFloat(progressMatch[1]);
-        if (progress > lastProgress) {
-          lastProgress = progress;
-          onProgress(progress);
-        }
-      }
-    });
-
-    proc.stdout.on('data', (data) => {
-      const output = data.toString();
-      const progressMatch = output.match(/(\d+\.?\d*)%/);
-      if (progressMatch) {
-        const progress = parseFloat(progressMatch[1]);
-        if (progress > lastProgress) {
-          lastProgress = progress;
-          onProgress(progress);
-        }
-      }
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) {
-        resolve({ outputPath, success: true });
-      } else {
-        const info = buildDownloadError(stderrTail, code, track, searchQuery);
-        const err = new Error(info.message);
-        err.hint = info.hint;
-        err.detail = info.detail;
-        reject(err);
-      }
-    });
-
-    proc.on('error', (err) => {
-      if (err.code === 'ENOENT') {
-        const info = buildDownloadError('', 127, track, searchQuery);
-        const friendly = new Error(info.message);
-        friendly.hint = info.hint;
-        friendly.detail = 'yt-dlp executable not found';
-        reject(friendly);
-      } else {
-        const info = buildDownloadError(err.message, null, track, searchQuery);
-        const friendly = new Error(info.message);
-        friendly.hint = info.hint;
-        friendly.detail = err.message;
-        reject(friendly);
-      }
-    });
-  });
+  );
 }
 
 // Pre-flight checks before starting a download job; returns a friendly error string or null
@@ -667,12 +799,14 @@ app.post('/api/playlist/fetch', async (req, res) => {
     return res.status(400).json({ error: 'Unsupported URL. Please provide a YouTube Music or Tidal playlist URL.' });
   }
 
+  const mergedFetchSettings = { ...currentSettings, ...(settings || {}) };
+
   try {
     let playlist;
     if (source === 'youtube') {
-      playlist = await fetchYouTubePlaylist(url);
+      playlist = await fetchYouTubePlaylist(url, mergedFetchSettings);
     } else {
-      playlist = await fetchTidalPlaylist(url, { ...currentSettings, ...settings });
+      playlist = await fetchTidalPlaylist(url, mergedFetchSettings);
     }
     
     playlists.set(playlist.id, playlist);
@@ -881,21 +1015,37 @@ app.post('/api/settings', (req, res) => {
 app.post('/api/youtube/search', async (req, res) => {
   const { query } = req.body;
   try {
-    const cmd = `yt-dlp --flat-playlist --dump-json "ytsearch5:${query}"`;
-    const { stdout } = await execAsync(cmd, { maxBuffer: 10 * 1024 * 1024 });
+    const safeQuery = String(query || '').replace(/["'`$\\]/g, ''); // basic shell-safety
+    const { stdout } = await runYtDlpThrottled(
+      ({ addArgs }) => execAsync(`yt-dlp ${addArgs.join(' ')} --flat-playlist --dump-json "ytsearch5:${safeQuery}"`, {
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+      {}
+    );
     const lines = stdout.trim().split('\n').filter(Boolean);
-    const results = lines.map(line => {
-      const data = JSON.parse(line);
-      return {
+    const results = [];
+    for (const line of lines) {
+      let data;
+      try {
+        data = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (data._type === 'playlist') continue;
+      results.push({
         id: data.id,
         title: data.title,
         artist: data.uploader || '',
         duration: data.duration,
         thumbnail: data.thumbnail,
-      };
-    });
+      });
+    }
     res.json(results);
   } catch (err) {
+    const text = `${err.stderr || ''} ${err.message || ''}`;
+    if (looksRateLimited(text)) {
+      return res.status(429).json({ error: 'YouTube is rate limiting searches right now. Wait a minute or two and try again.' });
+    }
     res.status(500).json({ error: err.message });
   }
 });

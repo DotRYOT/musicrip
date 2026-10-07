@@ -47,6 +47,11 @@ export interface Settings {
   embedMetadata: boolean;
   embedThumbnail: boolean;
   namingTemplate: string;
+  rateLimitEnabled: boolean;
+  ytMinDelayMs: number;
+  ytMaxDelayMs: number;
+  ytMaxRetries: number;
+  cookieFile: string;
 }
 
 export interface TidalAuthStatus {
