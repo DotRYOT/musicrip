@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, Play, Pause, X, Check, AlertCircle, Loader2, ChevronDown, ChevronUp, Eye, EyeOff, ExternalLink } from 'lucide-react';
 import type { Playlist, Track, Settings, ServerStatus, DownloadErrorSummary, TidalAuthStatus } from './types';
 import { fetchPlaylist, startDownload, getServerStatus, getDownloadProgress, pauseDownload, resumeDownload, cancelDownload, retryTrack, skipTrack, getApiErrorMessage, getSettings, updateSettings, startTidalAuth, openTidalAuthInBrowser, getTidalAuthStatus, disconnectTidal } from './api';
@@ -74,6 +74,22 @@ function App() {
       }
     })();
   }, []);
+
+  // Persist any settings change to the server so downloads actually use it.
+  // Without this, edits like the cookies file path would live only in the
+  // browser's memory and yt-dlp would keep running anonymously ("cookies
+  // aren't working / still rate limited"). Debounced to avoid a POST per keystroke.
+  const firstSettingsRender = useRef(true);
+  useEffect(() => {
+    if (firstSettingsRender.current) {
+      firstSettingsRender.current = false;
+      return; // don't re-save what we just loaded on startup
+    }
+    const t = setTimeout(() => {
+      updateSettings(settings).catch(() => {}); // server offline — will retry on next change
+    }, 600);
+    return () => clearTimeout(t);
+  }, [settings]);
 
   useEffect(() => {
     if (!jobId || !isDownloading || isPaused) return;
