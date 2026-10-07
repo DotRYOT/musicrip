@@ -83,7 +83,17 @@ export const startTidalAuth = async (clientId: string, clientSecret: string): Pr
   const { data } = await api.post('/tidal/auth/start', {
     clientId,
     clientSecret,
-    origin: window.location.origin,
+  });
+  return data;
+};
+
+// Opens the Tidal login page in the user's DEFAULT browser from the server.
+// Used as a fallback when the UI is served over HTTPS (a popup to the local
+// http://localhost API would be blocked as mixed content).
+export const openTidalAuthInBrowser = async (clientId: string, clientSecret: string): Promise<{ success: boolean; url: string }> => {
+  const { data } = await api.post('/tidal/auth/open-browser', {
+    clientId,
+    clientSecret,
   });
   return data;
 };
