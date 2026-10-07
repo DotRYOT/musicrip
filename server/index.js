@@ -199,6 +199,83 @@ async function fetchTidalPlaylist(url, settings) {
   };
 }
 
+// Build a user-friendly error from yt-dlp output / exit info
+function buildDownloadError(rawOutput, exitCode, track, searchQuery) {
+  const output = (rawOutput || '').trim();
+  // Keep the most informative (last) ERROR line from yt-dlp for context
+  const errorLines = output.split('\n').filter(l => /ERROR/i.test(l));
+  const detail = errorLines.length ? errorLines[errorLines.length - 1].replace(/^\s*ERROR:\s*/i, '').trim() : '';
+  const lower = detail.toLowerCase();
+
+  let message;
+  if (exitCode === 127 || /command not found/i.test(output)) {
+    message = 'yt-dlp is not installed or not on your PATH';
+  } else if (/unable to download api|sign in to confirm you.?re not a bot/i.test(lower)) {
+    message = 'YouTube blocked the request ("Sign in to confirm you\'re not a bot")';
+  } else if (/age[- ]?restricted/i.test(lower)) {
+    message = 'This track is age-restricted and requires sign-in credentials';
+  } else if (/video unavailable/i.test(lower)) {
+    message = 'The source video is unavailable (removed, private, or region-locked)';
+  } else if (/not a valid url|unsupported url/i.test(lower)) {
+    message = 'The resolved media URL is invalid or unsupported';
+  } else if (/no formats?(?: .*)?found|requested format is not available/i.test(lower)) {
+    message = 'No audio stream is available for this track at the selected quality';
+  } else if (/unable to extract (?:json|title|info)|get.*info.*failed/i.test(lower)) {
+    message = 'Could not read metadata from the source site — it may be down or blocking requests';
+  } else if (/network is unreachable|getaddrinfo|timed? ?out|connection refused|unable to download data|temporary error|ssl/i.test(lower)) {
+    message = 'Network error while downloading — check your internet connection';
+  } else if (/http error 403/i.test(lower)) {
+    message = 'Access denied by the server (HTTP 403) — the link may have expired';
+  } else if (/http error 404/i.test(lower)) {
+    message = 'Media not found on the server (HTTP 404)';
+  } else if (/http error 4\d{2}|http error 5\d{2}/i.test(lower)) {
+    message = 'The media server returned an error response';
+  } else if (/permission denied/i.test(lower)) {
+    message = 'Permission denied writing to the download folder';
+  } else if (/no space left/i.test(lower)) {
+    message = 'Disk is full — free up space before retrying';
+  } else if (/ffmpeg .*not found|couldn.?t find ffmpeg|is it installed/i.test(lower)) {
+    message = 'ffmpeg is required to convert audio but was not found on your PATH';
+  } else if (/download completed but file size was zero/i.test(lower)) {
+    message = 'The download finished but produced an empty file';
+  } else if (/fragment|retrying/i.test(lower) && /failed|giving up/i.test(lower)) {
+    message = 'The stream dropped repeatedly before it could finish';
+  } else if (detail) {
+    message = `yt-dlp reported: ${detail}`;
+  } else if (exitCode === null || exitCode === undefined) {
+    message = 'The download process was terminated unexpectedly';
+  } else {
+    message = `yt-dlp failed with exit code ${exitCode}`;
+  }
+
+  const who = track ? `"${track.artist} – ${track.title}"` : 'this track';
+  const hintMap = [
+    [/not installed|not on your PATH/i, 'Install it with "pacman -S yt-dlp" (or "pip install -U yt-dlp") and restart the server.'],
+    [/blocked the request|bot/i, 'Try again in a few minutes, update yt-dlp, or configure account cookies in Settings.'],
+    [/age-restricted/i, 'Configure account cookies for YouTube in Settings, then retry this track.'],
+    [/unavailable/i, 'Skip this track, or use Retry to manually match it against a different YouTube video.'],
+    [/no audio stream|selected quality/i, 'Lower the audio quality/format in Settings, or skip this track.'],
+    [/metadata from the source site/i, 'Update yt-dlp ("yt-dlp -U") — sites change frequently. Then retry.'],
+    [/network/i, 'Check your internet connection, then retry this track.'],
+    [/403/i, 'Retry the download — a fresh link will be requested automatically.'],
+    [/404/i, 'The track may have been removed from the source site. Try searching for a different version.'],
+    [/permission denied/i, 'Pick a writable output directory in Settings (check folder permissions).'],
+    [/disk is full/i, 'Free up disk space, then retry this track.'],
+    [/ffmpeg/i, 'Install ffmpeg with "pacman -S ffmpeg" and restart the server.'],
+    [/empty file/i, 'Retry this track. If it keeps failing, try a different format.'],
+    [/stream dropped/i, 'Retry when your connection is more stable.'],
+    [/terminated unexpectedly/i, 'The process was killed (possibly out of memory). Try retrying this track.'],
+  ];
+  const hint = hintMap.find(([re]) => re.test(message))?.[1]
+    || 'Retry this track. If it keeps failing, open the server terminal for the full yt-dlp log.';
+
+  return {
+    message: `Couldn't download ${who}: ${message}.`,
+    hint,
+    detail: detail || `yt-dlp exited with code ${exitCode}`,
+  };
+}
+
 // Download a single track using yt-dlp
 function downloadTrack(track, settings, onProgress) {
   return new Promise((resolve, reject) => {
@@ -253,10 +330,14 @@ function downloadTrack(track, settings, onProgress) {
 
     const proc = spawn('yt-dlp', args);
     let lastProgress = 0;
+    let stderrTail = '';
 
     proc.stderr.on('data', (data) => {
       const output = data.toString();
-      
+
+      // Keep the tail of stderr so we can build a helpful error message on failure
+      stderrTail = (stderrTail + output).slice(-8000);
+
       // Parse progress
       const progressMatch = output.match(/(\d+\.?\d*)%/);
       if (progressMatch) {
@@ -284,14 +365,59 @@ function downloadTrack(track, settings, onProgress) {
       if (code === 0) {
         resolve({ outputPath, success: true });
       } else {
-        reject(new Error(`yt-dlp exited with code ${code}`));
+        const info = buildDownloadError(stderrTail, code, track, searchQuery);
+        const err = new Error(info.message);
+        err.hint = info.hint;
+        err.detail = info.detail;
+        reject(err);
       }
     });
 
     proc.on('error', (err) => {
-      reject(err);
+      if (err.code === 'ENOENT') {
+        const info = buildDownloadError('', 127, track, searchQuery);
+        const friendly = new Error(info.message);
+        friendly.hint = info.hint;
+        friendly.detail = 'yt-dlp executable not found';
+        reject(friendly);
+      } else {
+        const info = buildDownloadError(err.message, null, track, searchQuery);
+        const friendly = new Error(info.message);
+        friendly.hint = info.hint;
+        friendly.detail = err.message;
+        reject(friendly);
+      }
     });
   });
+}
+
+// Pre-flight checks before starting a download job; returns a friendly error string or null
+async function checkDownloadPrerequisites(settings) {
+  const ytDlpExists = await commandExists('yt-dlp');
+  if (!ytDlpExists) {
+    return 'Cannot start downloads: yt-dlp is not installed or not on your PATH. Install it with "pacman -S yt-dlp" (or "pip install -U yt-dlp") and restart the server.';
+  }
+
+  const needsFfmpeg = settings.embedThumbnail || settings.audioFormat !== 'best';
+  if (needsFfmpeg && !(await commandExists('ffmpeg'))) {
+    return 'Cannot start downloads: ffmpeg is required to convert audio and embed metadata/thumbnails, but it was not found on your PATH. Install it with "pacman -S ffmpeg" and restart the server.';
+  }
+
+  const outputDir = String(settings.outputDir || '').replace('~', process.env.HOME || '');
+  try {
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.accessSync(outputDir, fs.constants.W_OK);
+  } catch (err) {
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      return `Cannot start downloads: no permission to write to "${settings.outputDir}". Choose a different output directory in Settings.`;
+    }
+    if (err.code === 'ENOSPC') {
+      return `Cannot start downloads: disk is full while preparing "${settings.outputDir}". Free up space and try again.`;
+    }
+    return `Cannot start downloads: output directory "${settings.outputDir}" is not usable (${err.message}). Check the path in Settings.`;
+  }
+
+  return null;
 }
 
 // API Routes
@@ -350,6 +476,13 @@ app.post('/api/download/start', async (req, res) => {
   }
 
   const mergedSettings = { ...currentSettings, ...settings };
+
+  // Fail fast with a clear message instead of erroring on every track
+  const prereqError = await checkDownloadPrerequisites(mergedSettings);
+  if (prereqError) {
+    return res.status(503).json({ error: prereqError });
+  }
+
   const jobId = uuidv4();
   
   const job = {
@@ -395,12 +528,27 @@ app.post('/api/download/start', async (req, res) => {
       } catch (err) {
         track.status = 'error';
         track.error = err.message;
+        track.errorHint = err.hint || '';
+        track.errorDetail = err.detail || err.message;
       }
     }
     
     if (!job.cancelled) {
       job.status = 'completed';
       playlist.status = 'completed';
+
+      // Summarize any failures so the UI can show one clear, actionable message
+      const failed = playlist.tracks.filter(t => t.status === 'error');
+      if (failed.length > 0) {
+        const first = failed[0];
+        job.errorSummary = {
+          count: failed.length,
+          total: playlist.tracks.length,
+          message: `${failed.length} of ${playlist.tracks.length} tracks failed to download.`,
+          example: first.error,
+          hint: first.errorHint || 'Open the failing tracks to see details, then retry or skip them.',
+        };
+      }
     }
   })();
 
@@ -420,6 +568,7 @@ app.get('/api/download/progress/:jobId', (req, res) => {
     tracks: playlist.tracks,
     status: job.status,
     currentTrack: job.currentTrack,
+    errorSummary: job.errorSummary || null,
   });
 });
 

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Playlist, Settings, ServerStatus, Track } from './types';
+import type { Playlist, Settings, ServerStatus, Track, DownloadErrorSummary } from './types';
 
 const API_BASE = '/api';
 
@@ -7,6 +7,21 @@ const api = axios.create({
   baseURL: API_BASE,
   timeout: 30000,
 });
+
+// Turn axios/network failures into clear, actionable messages
+export const getApiErrorMessage = (err: any, fallback: string): string => {
+  if (err?.response?.data?.error) return err.response.data.error;
+  if (err?.code === 'ECONNABORTED') {
+    return 'The server took too long to respond. It may be busy or stuck — check that the backend is running and try again.';
+  }
+  if (err?.message === 'Network Error' || err?.code === 'ERR_NETWORK') {
+    return 'Cannot reach the backend server (port 3001). Make sure it is running: npm run server';
+  }
+  if (err?.response?.status === 503) {
+    return err.response.data?.error || 'The server is missing a required tool (yt-dlp or ffmpeg).';
+  }
+  return err?.response?.data?.error || err?.message || fallback;
+};
 
 export const fetchPlaylist = async (url: string, settings: Partial<Settings>): Promise<Playlist> => {
   const { data } = await api.post('/playlist/fetch', { url, settings });
@@ -35,7 +50,7 @@ export const getServerStatus = async (): Promise<ServerStatus> => {
   return data;
 };
 
-export const getDownloadProgress = async (jobId: string): Promise<{ tracks: Track[]; status: string }> => {
+export const getDownloadProgress = async (jobId: string): Promise<{ tracks: Track[]; status: string; errorSummary: DownloadErrorSummary | null }> => {
   const { data } = await api.get(`/download/progress/${jobId}`);
   return data;
 };

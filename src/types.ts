@@ -9,8 +9,18 @@ export interface Track {
   status: 'pending' | 'searching' | 'downloading' | 'completed' | 'error' | 'skipped';
   progress: number;
   error?: string;
+  errorHint?: string;
+  errorDetail?: string;
   youtubeMatch?: string;
   outputPath?: string;
+}
+
+export interface DownloadErrorSummary {
+  count: number;
+  total: number;
+  message: string;
+  example: string;
+  hint: string;
 }
 
 export interface Playlist {
