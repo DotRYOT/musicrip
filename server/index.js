@@ -317,10 +317,28 @@ function looksRateLimited(text) {
   return /too many requests|http error 429|rate ?limit|sign in to confirm|not a bot|captcha|are you a robot|403 forbidden|restricted/i.test(text);
 }
 
+// True when the log shows cookies were loaded and YouTube still blocked us —
+// i.e. adding/refreshing cookies will not fix this particular block.
+function looksCookieIneffective(text) {
+  if (!text) return false;
+  return /cookies (?:loaded|from browser)|cookiejar|browser cookies|http cookie file/i.test(text)
+    && looksRateLimited(text);
+}
+
+// Expand "~" (and bare "~/..." paths) using HOME so a cookies.txt saved as
+// "~/.config/cookies.txt" resolves identically everywhere it is used.
+function resolveHomePath(p) {
+  return String(p || '').trim().replace(/^~(?=$|\/)/, process.env.HOME || '');
+}
+
 // Common hardening flags applied to every yt-dlp call.
 function getYtDlpCommonArgs(settings) {
+  const s = settings || currentSettings;
   const args = [
-    '--extractor-args', 'youtube:player_client=android', // less prone to bot checks than the web client
+    // With cookies configured, use the authenticated "web" client so the PO
+    // token derived from the session matches what YouTube expects. Without
+    // cookies, the "android" client is less prone to bot checks.
+    '--extractor-args', `youtube:player_client=${hasCookiesConfigured(s) ? 'web' : 'android'}`,
     '--extractor-args', 'youtubetab:approximate_date',
     '--sleep-requests', '1',                              // pause between internal HTTP requests
     '--sleep-interval', '2',                              // pause before each download
@@ -330,7 +348,7 @@ function getYtDlpCommonArgs(settings) {
     '--socket-timeout', '30',
     '--ignore-errors',
   ];
-  args.push(...getCookieArgs(settings));
+  args.push(...getCookieArgs(s));
   return args;
 }
 
@@ -340,24 +358,44 @@ function getYtDlpCommonArgs(settings) {
 //   - file    : Netscape-format cookies.txt exported from the browser
 //   - browser : read cookies directly from a local browser profile via
 //               yt-dlp --cookies-from-browser (chrome, firefox, edge, ...)
-function getCookieArgs(settings) {
+function resolveCookieConfig(settings) {
   const s = settings || currentSettings;
   // Backward compat: if cookieSource is unset but a cookieFile path exists, treat as 'file'.
   const source = String(s.cookieSource || ((s.cookieFile || '').trim() ? 'file' : 'none')).toLowerCase();
   if (source === 'file') {
-    const cookieFile = String(s.cookieFile || '').trim().replace(/^~(?=$|\/)/, process.env.HOME || '');
-    if (cookieFile && fs.existsSync(cookieFile)) {
-      return ['--cookies', cookieFile];
-    }
-    return [];
+    const cookieFile = resolveHomePath(s.cookieFile);
+    if (!cookieFile) return { source, ok: false, args: [], reason: 'No cookies file path is set.' };
+    if (!fs.existsSync(cookieFile)) return { source, ok: false, args: [], reason: `Cookies file not found on the server: ${cookieFile}` };
+    let readable = true;
+    try { fs.accessSync(cookieFile, fs.constants.R_OK); } catch { readable = false; }
+    if (!readable) return { source, ok: false, args: [], reason: `Cookies file is not readable (check permissions): ${cookieFile}` };
+    return { source, ok: true, args: ['--cookies', cookieFile] };
   }
   if (source === 'browser') {
     const browser = String(s.cookieBrowser || '').trim().replace(/["'`$\\]/g, '');
-    if (browser) {
-      return ['--cookies-from-browser', browser];
-    }
+    if (!browser) return { source, ok: false, args: [], reason: 'No browser selected for cookie extraction.' };
+    return { source, ok: true, args: ['--cookies-from-browser', browser] };
   }
-  return [];
+  return { source: source || 'none', ok: true, args: [] };
+}
+
+function getCookieArgs(settings) {
+  const resolved = resolveCookieConfig(settings);
+  if (!resolved.ok) {
+    // Cookies were configured but can't be applied — say so loudly in the
+    // server log instead of silently falling back to anonymous mode (which
+    // looks to the user exactly like "my cookies aren't working").
+    console.warn(`[cookies] Configured cookie source "${resolved.source}" is inactive: ${resolved.reason}`);
+    return [];
+  }
+  return resolved.args;
+}
+
+// True when a usable cookie configuration exists (used to pick the YouTube
+// player client: authenticated sessions must use the "web" client).
+function hasCookiesConfigured(settings) {
+  const resolved = resolveCookieConfig(settings);
+  return resolved.ok && resolved.args.length > 0;
 }
 
 const KNOWN_COOKIES_BROWSERS = ['brave', 'chrome', 'chromium', 'edge', 'firefox', 'opera', 'safari', 'vivaldi', 'whale'];
@@ -365,29 +403,57 @@ const KNOWN_COOKIES_BROWSERS = ['brave', 'chrome', 'chromium', 'edge', 'firefox'
 // Validate cookie configuration without running a download (used by Settings UI).
 async function validateCookieConfig(settings) {
   const s = settings || currentSettings;
-  const source = String(s.cookieSource || 'none').toLowerCase();
+  const source = String(s.cookieSource || ((s.cookieFile || '').trim() ? 'file' : 'none')).toLowerCase();
   if (source === 'none' || !source) {
     return { ok: true, message: 'No cookies configured (anonymous mode).' };
   }
+  // Shared resolution with actual downloads — guarantees "TEST" and real
+  // yt-dlp calls agree on whether the cookies are usable.
+  const resolved = resolveCookieConfig(s);
+  if (!resolved.ok) {
+    return { ok: false, message: `${resolved.reason} Downloads currently run WITHOUT cookies.` };
+  }
+
   if (source === 'file') {
-    const raw = String(s.cookieFile || '').trim();
-    if (!raw) return { ok: false, message: 'Cookies file path is empty.' };
-    const p = raw.replace(/^~(?=$|\/)/, process.env.HOME || '');
-    if (!fs.existsSync(p)) return { ok: false, message: `Cookies file not found: ${p}` };
+    const p = resolveHomePath(s.cookieFile);
     let content = '';
     try {
-      content = fs.readFileSync(p, 'utf-8').slice(0, 4096);
+      content = fs.readFileSync(p, 'utf-8').slice(0, 65536);
     } catch {
       return { ok: false, message: `Cookies file could not be read: ${p}` };
     }
     if (!/#.*(Netscape|WWW-Authenticate)/i.test(content) && !/^#[ \t]*HTTP Cookie File/mi.test(content)) {
       return { ok: false, message: 'File does not look like a Netscape-format cookies.txt export.' };
     }
-    return { ok: true, message: `Cookies file OK (${p}).` };
+    // A well-formed file that contains no YouTube cookies is silently useless
+    // to yt-dlp — this is the classic "added cookies.txt but still rate limited" case.
+    const ytDomainRe = /\.(?:youtube\.com|youtu\.be)$/i;
+    const lines = content.split('\n').filter((l) => l && !l.startsWith('#'));
+    const ytCookies = lines.filter((l) => ytDomainRe.test((l.split('\t')[0] || '').trim()));
+    if (ytCookies.length === 0) {
+      return {
+        ok: false,
+        message: `File parsed OK but contains NO youtube.com / youtu.be cookies (${lines.length} cookies for other domains only). Sign in to YouTube in your browser first, then re-export from youtube.com or music.youtube.com.`,
+      };
+    }
+    const hasSession = /(^|\t)(__Secure-?SID|SAPISID|HSID|SSID|LOGIN_INFO)(\t|$)/m.test(ytCookies.join('\n'));
+    if (!hasSession) {
+      return {
+        ok: false,
+        message: `Found ${ytCookies.length} YouTube cookie(s) but none of the sign-in session cookies (__Secure-_SID, SAPISID, HSID, SSID, LOGIN_INFO). The export was likely made while logged out or filtered — re-export ALL cookies while signed in to YouTube.`,
+      };
+    }
+    const expiresCol = ytCookies.map((l) => Number((l.split('\t')[4] || '').trim())).filter(Number.isFinite);
+    const now = Math.floor(Date.now() / 1000);
+    const expired = expiresCol.filter((e) => e > 0 && e < now).length;
+    if (expired > 0 && expired >= ytCookies.length - 1) {
+      return { ok: false, message: `YouTube cookies in this file have EXPIRED (${expired}/${ytCookies.length}). Re-export a fresh cookies.txt from your browser.` };
+    }
+    return { ok: true, message: `Cookies file OK (${p}) — ${ytCookies.length} YouTube session cookie(s) present.` };
   }
+
   if (source === 'browser') {
     const browser = String(s.cookieBrowser || '').trim().toLowerCase();
-    if (!browser) return { ok: false, message: 'No browser selected.' };
     const name = browser.split(':')[0];
     if (!KNOWN_COOKIES_BROWSERS.includes(name)) {
       return { ok: false, message: `Unsupported browser "${name}". Choose one of: ${KNOWN_COOKIES_BROWSERS.join(', ')}.` };
@@ -443,7 +509,14 @@ async function runYtDlpThrottled(run, opts = {}) {
       } catch (err) {
         lastErr = err;
         const text = typeof opts.outputText === 'function' ? opts.outputText(err) : String((err && (err.stderr || err.message)) || '');
-        if (!looksRateLimited(text) || attempt === attempts - 1) throw err;
+        if (!looksRateLimited(text) || attempt === attempts - 1) {
+          if (looksRateLimited(text)) {
+            // Give up, but tell the user whether cookies were even in play.
+            err.rateLimited = true;
+            err.cookieIneffective = looksCookieIneffective(text);
+          }
+          throw err;
+        }
         const backoff = cfg.baseBackoffMs * Math.pow(2, attempt) + randInt(0, 2000);
         console.log(`[yt-dlp] Rate limited by YouTube — backing off ${Math.round(backoff / 1000)}s (retry ${attempt + 1}/${cfg.maxRetries})`);
         await sleep(backoff);
@@ -540,7 +613,11 @@ async function fetchYouTubePlaylist(url, settings) {
   } catch (err) {
     const text = `${err.stderr || ''} ${err.message || ''}`;
     if (looksRateLimited(text)) {
-      throw new Error('YouTube is rate limiting this server ("Too many requests"). It will back off automatically — wait a few minutes and retry, or add a cookies file in Settings for higher limits.');
+      throw new Error(
+        err.cookieIneffective
+          ? 'YouTube is rate limiting this server EVEN WITH your cookies loaded ("Too many requests"). The block is on the IP/account session — wait 15–60 minutes (cookies alone won\'t lift it), or use a different network.'
+          : 'YouTube is rate limiting this server ("Too many requests"). It will back off automatically — wait a few minutes and retry, or add account cookies in Settings for higher limits. If you already added a cookies.txt, click "TEST COOKIES" in Settings to confirm it is actually being applied.'
+      );
     }
     throw new Error(`Failed to fetch YouTube playlist: ${err.message}`);
   }
@@ -1106,9 +1183,24 @@ app.post('/api/download/start', async (req, res) => {
         playlist.completedTracks++;
       } catch (err) {
         track.status = 'error';
-        track.error = err.message;
-        track.errorHint = err.hint || '';
-        track.errorDetail = err.detail || err.message;
+        // If the queue exhausted its rate-limit backoff, replace the raw yt-dlp
+        // text with an actionable message that reflects the cookie state.
+        if (err.rateLimited && !err.hint) {
+          const cookiesActive = hasCookiesConfigured(mergedSettings);
+          track.error = err.cookieIneffective || cookiesActive
+            ? `Rate limited by YouTube even with cookies applied ("${track.artist} – ${track.title}").`
+            : `Rate limited by YouTube ("${track.artist} – ${track.title}") — all retries backed off.`;
+          track.errorHint = err.cookieIneffective
+            ? 'Your cookies WERE loaded but YouTube still blocked this IP/session. Wait 15–60 minutes before retrying, or download from a different network. Re-adding cookies will not help until the block expires.'
+            : hasCookiesConfigured(mergedSettings)
+              ? 'Cookies are configured and being used. The block is temporary — wait several minutes, then Retry. Increase the delays in Settings to avoid tripping it again.'
+              : 'Add account cookies in Settings (Cookies → Cookies file / From browser) for higher limits, then Retry. Click "TEST COOKIES" to confirm they apply.';
+          track.errorDetail = err.detail || err.message;
+        } else {
+          track.error = err.message;
+          track.errorHint = err.hint || '';
+          track.errorDetail = err.detail || err.message;
+        }
       }
     }
     
