@@ -21,7 +21,9 @@ function App() {
     ytMinDelayMs: 1500,
     ytMaxDelayMs: 4000,
     ytMaxRetries: 3,
+    cookieSource: 'none' as 'none' | 'file' | 'browser',
     cookieFile: '',
+    cookieBrowser: '',
   });
   const [tidalStatus, setTidalStatus] = useState<TidalAuthStatus | null>(null);
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
@@ -697,17 +699,98 @@ function SettingsPanel({ settings, setSettings, tidalStatus, onTidalStatusChange
             </div>
           </div>
           <div className="mt-3">
-            <label className="block text-xs text-[#1a3a1a] mb-1">COOKIES FILE (NETScape FORMAT, OPTIONAL — RAISES LIMITS):</label>
-            <input
-              type="text"
-              value={settings.cookieFile}
-              onChange={(e) => setSettings({ ...settings, cookieFile: e.target.value })}
-              placeholder="~/.config/ytdlp-cookies.txt"
-              className="w-full px-3 py-2 ascii-input text-xs"
-            />
+            <label className="block text-xs text-[#1a3a1a] mb-1">COOKIES (OPTIONAL — SIGN-IN RAISES YOUTUBE LIMITS):</label>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-2">
+              {(['none', 'file', 'browser'] as const).map((src) => (
+                <button
+                  key={src}
+                  type="button"
+                  onClick={() => setSettings({ ...settings, cookieSource: src })}
+                  className={`px-3 py-2 ascii-input text-xs uppercase ${
+                    settings.cookieSource === src ? 'text-[#33ff33] border border-[#33ff33]' : 'text-[#1a3a1a]'
+                  }`}
+                >
+                  {src === 'none' ? 'None (anonymous)' : src === 'file' ? 'Cookies file' : 'From browser'}
+                </button>
+              ))}
+            </div>
+            {settings.cookieSource === 'file' && (
+              <input
+                type="text"
+                value={settings.cookieFile}
+                onChange={(e) => setSettings({ ...settings, cookieFile: e.target.value })}
+                placeholder="~/.config/ytdlp-cookies.txt (Netscape format)"
+                className="w-full px-3 py-2 ascii-input text-xs"
+              />
+            )}
+            {settings.cookieSource === 'browser' && (
+              <select
+                value={settings.cookieBrowser}
+                onChange={(e) => setSettings({ ...settings, cookieBrowser: e.target.value })}
+                className="w-full px-3 py-2 ascii-input text-xs"
+              >
+                <option value="">Select browser…</option>
+                {['brave', 'chrome', 'chromium', 'edge', 'firefox', 'opera', 'safari', 'vivaldi'].map((b) => (
+                  <option key={b} value={b}>{b.toUpperCase()}</option>
+                ))}
+              </select>
+            )}
+            {settings.cookieSource !== 'none' && (
+              <CookieValidateButton settings={settings} />
+            )}
+            <p className="text-[10px] text-[#1a3a1a] mt-1">
+              {settings.cookieSource === 'none' && 'Anonymous mode — most likely to be rate limited.'}
+              {settings.cookieSource === 'file' && 'Export cookies with a "Get cookies.txt"-style browser extension while signed in to YouTube.'}
+              {settings.cookieSource === 'browser' && 'Reads your logged-in session directly from the browser profile (server must run on the same machine as the browser).'}
+            </p>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Test button for the optional cookies configuration (validates file / browser profile).
+function CookieValidateButton({ settings }: { settings: Settings }) {
+  const [state, setState] = useState<{ busy: boolean; result: { ok: boolean; message: string } | null }>({
+    busy: false,
+    result: null,
+  });
+
+  const validate = async () => {
+    setState({ busy: true, result: null });
+    try {
+      const res = await fetch('/api/cookies/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cookieSource: settings.cookieSource,
+          cookieFile: settings.cookieFile,
+          cookieBrowser: settings.cookieBrowser,
+        }),
+      });
+      const json = await res.json();
+      setState({ busy: false, result: json });
+    } catch (err) {
+      setState({ busy: false, result: { ok: false, message: `Request failed: ${(err && (err as Error).message) || 'network error'}` } });
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={validate}
+        disabled={state.busy}
+        className="px-3 py-2 ascii-input text-xs text-[#33ff33] disabled:opacity-50"
+      >
+        {state.busy ? 'TESTING…' : 'TEST COOKIES'}
+      </button>
+      {state.result && (
+        <p className={`text-[10px] mt-1 ${state.result.ok ? 'text-[#33ff33]' : 'text-[#ff5555]'}`}>
+          {state.result.message}
+        </p>
+      )}
     </div>
   );
 }
