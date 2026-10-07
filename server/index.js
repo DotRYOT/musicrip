@@ -510,6 +510,7 @@ async function fetchYouTubePlaylist(url, settings) {
         playlistTitle = data.title || playlistTitle;
         continue;
       }
+      const videoId = extractYouTubeVideoId(data.url || data.id);
       tracks.push({
         id: uuidv4(),
         title: data.title || 'Unknown',
@@ -520,7 +521,9 @@ async function fetchYouTubePlaylist(url, settings) {
         source: 'youtube',
         status: 'pending',
         progress: 0,
-        youtubeMatch: data.url || data.id,
+        // Store a bare video id whenever possible; fall back to the raw url/id so
+        // non-standard entries are still passed through to yt-dlp untouched.
+        youtubeMatch: videoId || data.url || data.id,
       });
     }
 
@@ -671,12 +674,94 @@ async function finishTidalPlaylistFetch(metaResponse, playlistId, url, tidalAcce
   };
 }
 
+// Extract a bare YouTube video id from anything the source (or a saved playlist)
+// gave us: a plain id, a watch?v= URL, a youtu.be URL, a music.youtube.com URL,
+// or even a doubly-nested/garbled URL such as
+// "https://www.youtube.com/watch?v=https://www.youtube.com/watch?v=yCE50OdVWjM".
+// Returns null when no 11-character id can be found.
+const YT_URL_PREFIX_RE = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\/(?:v\/)?|embed\/|shorts\/|live\/|v\/)|youtu\.be\/)/i;
+function extractYouTubeVideoId(value) {
+  let candidate = String(value || '').trim();
+  if (!candidate) return null;
+
+  // Repeatedly peel off YouTube URL prefixes glued in front of the real
+  // argument, so nested URLs collapse down to the innermost value.
+  let prev;
+  do {
+    prev = candidate;
+    candidate = candidate.replace(YT_URL_PREFIX_RE, '');
+  } while (candidate !== prev);
+
+  // If a query string is present, prefer the v= parameter (and follow it if it
+  // itself contains a nested URL).
+  const vParam = candidate.match(/[?&]v=([^&#]*)/);
+  if (vParam) {
+    candidate = vParam[1];
+    do {
+      prev = candidate;
+      candidate = candidate.replace(YT_URL_PREFIX_RE, '');
+    } while (candidate !== prev);
+  } else {
+    // Drop any remaining query/fragment before matching the id.
+    candidate = candidate.split(/[?#]/)[0];
+  }
+
+  // A still-nested URL (e.g. "?v=https://…") — keep unwrapping until we reach
+  // the innermost value instead of failing outright.
+  while (/^https?:\/\//i.test(candidate)) {
+    const deeper = candidate.match(/^https?:\/\/[^?#]*[?&]v=([^&#]*)/i);
+    if (!deeper) break;
+    candidate = deeper[1];
+    do {
+      prev = candidate;
+      candidate = candidate.replace(YT_URL_PREFIX_RE, '');
+    } while (candidate !== prev);
+  }
+
+  // Non-YouTube URL we don't understand → nothing safe to extract.
+  if (/^https?:\/\//i.test(candidate)) return null;
+
+  const m = candidate.match(/(?:^|\/)([A-Za-z0-9_-]{11})(?:$|[/?])/);
+  if (m) return m[1];
+  // Last resort: a bare id sitting alone in the string.
+  const solo = candidate.match(/^([A-Za-z0-9_-]{11})$/);
+  return solo ? solo[1] : null;
+}
+
+// Is this something yt-dlp can actually resolve (a real URL or a search: prefix)?
+function isValidMediaUrl(value) {
+  const raw = String(value || '').trim();
+  if (/^(ytsearch|msearch|avs)[0-9]*:/i.test(raw)) return true;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    // A URL whose scheme appears again inside its own query/path is malformed
+    // (e.g. "https://www.youtube.com/watch?v=https://www.youtube.com/watch?v=ID"),
+    // so it is not a valid media URL even though the outer part parses.
+    return !/(https?:\/\/)/i.test(u.pathname + u.search + u.hash);
+  } catch {
+    return false;
+  }
+}
+
 // Build a user-friendly error from yt-dlp output / exit info
 function buildDownloadError(rawOutput, exitCode, track, searchQuery) {
   const output = (rawOutput || '').trim();
   // Keep the most informative (last) ERROR line from yt-dlp for context
   const errorLines = output.split('\n').filter(l => /ERROR/i.test(l));
-  const detail = errorLines.length ? errorLines[errorLines.length - 1].replace(/^\s*ERROR:\s*/i, '').trim() : '';
+  let detail = errorLines.length ? errorLines[errorLines.length - 1].replace(/^\s*ERROR:\s*/i, '').trim() : '';
+
+  // yt-dlp echoes the offending argument in "Unsupported URL: <arg>" messages.
+  // If that argument is actually a well-formed URL, the real problem was how we
+  // built it (e.g. a video id that was already a full URL got nested inside
+  // https://www.youtube.com/watch?v=...), not the source itself — so report the
+  // raw log instead of telling the user the link is invalid.
+  const echoedUrlMatch = detail.match(/Unsupported URL:\s*(\S+)/i);
+  if (echoedUrlMatch && isValidMediaUrl(echoedUrlMatch[1])) {
+    console.warn(`[yt-dlp] Rejected an argument that looks like a valid URL: ${echoedUrlMatch[1]}`);
+    detail = '';
+  }
+
   const lower = detail.toLowerCase();
 
   let message;
@@ -776,7 +861,20 @@ async function downloadTrack(track, settings, onProgress) {
 
   let searchQuery;
   if (track.source === 'youtube' && track.youtubeMatch) {
-    searchQuery = `https://www.youtube.com/watch?v=${track.youtubeMatch}`;
+    // youtubeMatch may be a bare video id, or a full URL (yt-dlp's flat-playlist
+    // output puts the complete watch?v= URL in `url`). Interpolating blindly
+    // produced nested garbage like "watch?v=https://www.youtube.com/watch?v=…"
+    // which yt-dlp rejects with "Unsupported URL". Normalize instead.
+    const match = String(track.youtubeMatch).trim();
+    const videoId = extractYouTubeVideoId(match);
+    if (videoId) {
+      searchQuery = `https://www.youtube.com/watch?v=${videoId}`;
+    } else if (/^https?:\/\//i.test(match)) {
+      // Non-YouTube link we can't reduce to an id — hand it to yt-dlp as-is.
+      searchQuery = match;
+    } else {
+      searchQuery = `https://www.youtube.com/watch?v=${match}`;
+    }
   } else {
     // Search YouTube Music for the track
     searchQuery = `ytsearch5:${track.artist} - ${track.title}`;
