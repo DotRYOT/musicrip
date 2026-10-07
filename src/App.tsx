@@ -17,6 +17,11 @@ function App() {
     embedMetadata: true,
     embedThumbnail: true,
     namingTemplate: '{artist} - {title}',
+    rateLimitEnabled: true,
+    ytMinDelayMs: 1500,
+    ytMaxDelayMs: 4000,
+    ytMaxRetries: 3,
+    cookieFile: '',
   });
   const [tidalStatus, setTidalStatus] = useState<TidalAuthStatus | null>(null);
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
@@ -647,6 +652,60 @@ function SettingsPanel({ settings, setSettings, tidalStatus, onTidalStatusChange
             />
             <span className="text-xs text-[#33ff33]">EMBED THUMBNAIL</span>
           </label>
+        </div>
+
+        <div className="md:col-span-2 ascii-input p-3">
+          <pre className="text-[10px] text-[#1a3a1a] mb-2">{'YOUTUBE ANTI-RATE-LIMITING'}</pre>
+          <label className="flex items-center gap-2 cursor-pointer mb-3">
+            <input
+              type="checkbox"
+              checked={settings.rateLimitEnabled}
+              onChange={(e) => setSettings({ ...settings, rateLimitEnabled: e.target.checked })}
+            />
+            <span className="text-xs text-[#33ff33]">ENABLE (throttle + backoff retries)</span>
+          </label>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs text-[#1a3a1a] mb-1">MIN DELAY (MS):</label>
+              <input
+                type="number"
+                min={0}
+                value={settings.ytMinDelayMs}
+                onChange={(e) => setSettings({ ...settings, ytMinDelayMs: Number(e.target.value) || 0 })}
+                className="w-full px-3 py-2 ascii-input text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[#1a3a1a] mb-1">MAX DELAY (MS):</label>
+              <input
+                type="number"
+                min={0}
+                value={settings.ytMaxDelayMs}
+                onChange={(e) => setSettings({ ...settings, ytMaxDelayMs: Number(e.target.value) || 0 })}
+                className="w-full px-3 py-2 ascii-input text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[#1a3a1a] mb-1">MAX RETRIES:</label>
+              <input
+                type="number"
+                min={0}
+                value={settings.ytMaxRetries}
+                onChange={(e) => setSettings({ ...settings, ytMaxRetries: Number(e.target.value) || 0 })}
+                className="w-full px-3 py-2 ascii-input text-xs"
+              />
+            </div>
+          </div>
+          <div className="mt-3">
+            <label className="block text-xs text-[#1a3a1a] mb-1">COOKIES FILE (NETScape FORMAT, OPTIONAL — RAISES LIMITS):</label>
+            <input
+              type="text"
+              value={settings.cookieFile}
+              onChange={(e) => setSettings({ ...settings, cookieFile: e.target.value })}
+              placeholder="~/.config/ytdlp-cookies.txt"
+              className="w-full px-3 py-2 ascii-input text-xs"
+            />
+          </div>
         </div>
       </div>
     </div>
