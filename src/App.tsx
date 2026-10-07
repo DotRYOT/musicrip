@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Play, Pause, X, Check, AlertCircle, Loader2 } from 'lucide-react';
-import type { Playlist, Track, Settings, ServerStatus } from './types';
-import { fetchPlaylist, startDownload, getServerStatus, getDownloadProgress, pauseDownload, resumeDownload, cancelDownload, retryTrack, skipTrack } from './api';
+import { RefreshCw, Play, Pause, X, Check, AlertCircle, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import type { Playlist, Track, Settings, ServerStatus, DownloadErrorSummary } from './types';
+import { fetchPlaylist, startDownload, getServerStatus, getDownloadProgress, pauseDownload, resumeDownload, cancelDownload, retryTrack, skipTrack, getApiErrorMessage } from './api';
 
 function App() {
   const [playlistUrl, setPlaylistUrl] = useState('');
@@ -22,6 +22,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [downloadSummary, setDownloadSummary] = useState<DownloadErrorSummary | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -59,6 +60,11 @@ function App() {
         }
         if (progress.status === 'completed') {
           setIsDownloading(false);
+          if (progress.errorSummary) {
+            setDownloadSummary(progress.errorSummary);
+          } else {
+            setDownloadSummary(null);
+          }
         }
       } catch {
         // ignore
@@ -75,7 +81,7 @@ function App() {
       const result = await fetchPlaylist(playlistUrl, settings);
       setPlaylist(result);
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to fetch playlist. Make sure the backend server is running.');
+      setError(getApiErrorMessage(err, 'Failed to fetch playlist. Make sure the backend server is running on port 3001 (npm run server).'));
     } finally {
       setIsLoading(false);
     }
@@ -86,12 +92,13 @@ function App() {
     setIsDownloading(true);
     setIsPaused(false);
     setError(null);
+    setDownloadSummary(null);
     try {
       const result = await startDownload(playlist.id, settings);
       setJobId(result.jobId);
       setPlaylist(prev => prev ? { ...prev, status: 'downloading' } : null);
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to start download');
+      setError(getApiErrorMessage(err, 'Failed to start the download. Make sure the backend server is running on port 3001 (npm run server).'));
       setIsDownloading(false);
     }
   };
@@ -259,6 +266,25 @@ function App() {
           </div>
         )}
 
+        {/* Download failures summary */}
+        {downloadSummary && !isDownloading && (
+          <div className="ascii-border border-[#ff3333] bg-[#1a0a0a] p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-[#ff3333] flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-[#ff3333] font-bold">
+                  DOWNLOAD FINISHED WITH ERRORS: {downloadSummary.message}
+                </p>
+                <p className="text-[#aa5555] text-sm mt-1">{downloadSummary.example}</p>
+                <p className="text-[#ffaa00] text-xs mt-2">HINT: {downloadSummary.hint}</p>
+              </div>
+              <button onClick={() => setDownloadSummary(null)} className="text-[#ff3333] hover:text-[#ff6666]">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Playlist Content */}
         {playlist && (
           <div className="ascii-border">
@@ -405,6 +431,8 @@ function TrackRow({ track, index, onRetry, onSkip, isDownloading }: {
   onSkip: (id: string) => void;
   isDownloading: boolean;
 }) {
+  const [showErrorDetail, setShowErrorDetail] = useState(false);
+
   const statusConfig = {
     pending: { icon: null, color: 'text-[#1a3a1a]', bg: '' },
     searching: { icon: <Loader2 className="w-3 h-3 animate-spin" />, color: 'text-[#33aaff]', bg: 'bg-[#0a1a2a]' },
@@ -417,47 +445,75 @@ function TrackRow({ track, index, onRetry, onSkip, isDownloading }: {
   const config = statusConfig[track.status];
 
   return (
-    <div className={`flex items-center gap-2 px-2 py-1.5 border-b border-[#0d1a0d] hover:bg-[#0d1a0d] group ${config.bg}`}>
-      <span className="text-xs text-[#1a3a1a] w-8 text-right font-mono">{String(index).padStart(3, '0')}</span>
-      
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium truncate">{track.title}</p>
-        <p className="text-[10px] text-[#1a3a1a] truncate">{track.artist}</p>
-      </div>
+    <div className={`group border-b border-[#0d1a0d] hover:bg-[#0d1a0d] ${config.bg}`}>
+      <div className="flex items-center gap-2 px-2 py-1.5">
+        <span className="text-xs text-[#1a3a1a] w-8 text-right font-mono">{String(index).padStart(3, '0')}</span>
 
-      {/* Progress bar for downloading */}
-      {track.status === 'downloading' && (
-        <div className="w-16 h-2 bg-[#0a0a0a] border border-[#1a3a1a] overflow-hidden">
-          <div
-            className="h-full bg-[#33ff33] transition-all"
-            style={{ width: `${track.progress}%` }}
-          />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium truncate">{track.title}</p>
+          <p className="text-[10px] text-[#1a3a1a] truncate">{track.artist}</p>
         </div>
-      )}
 
-      {/* Status */}
-      <div className={`flex items-center gap-1 ${config.color}`}>
-        {config.icon}
-        <span className="text-[10px] uppercase hidden sm:inline">{track.status}</span>
+        {/* Progress bar for downloading */}
+        {track.status === 'downloading' && (
+          <div className="w-16 h-2 bg-[#0a0a0a] border border-[#1a3a1a] overflow-hidden">
+            <div
+              className="h-full bg-[#33ff33] transition-all"
+              style={{ width: `${track.progress}%` }}
+            />
+          </div>
+        )}
+
+        {/* Status */}
+        <div className={`flex items-center gap-1 ${config.color}`}>
+          {config.icon}
+          <span className="text-[10px] uppercase hidden sm:inline">{track.status}</span>
+        </div>
+
+        {/* Toggle error details */}
+        {track.status === 'error' && track.error && (
+          <button
+            onClick={() => setShowErrorDetail(!showErrorDetail)}
+            className="p-1 text-[#ff3333] hover:text-[#ff6666]"
+            title={showErrorDetail ? 'Hide error details' : 'Show error details'}
+          >
+            {showErrorDetail ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+        )}
+
+        {/* Actions */}
+        {track.status === 'error' && (
+          <div className={`flex items-center gap-1 ${isDownloading ? 'opacity-0 group-hover:opacity-100' : ''} transition-opacity`}>
+            <button
+              onClick={() => onRetry(track.id)}
+              className="p-1 hover:bg-[#1a3a1a] text-[#33aaff]"
+              title="Retry"
+            >
+              <RefreshCw className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => onSkip(track.id)}
+              className="p-1 hover:bg-[#1a3a1a] text-[#1a3a1a]"
+              title="Skip"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Actions */}
-      {track.status === 'error' && isDownloading && (
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button
-            onClick={() => onRetry(track.id)}
-            className="p-1 hover:bg-[#1a3a1a] text-[#33aaff]"
-            title="Retry"
-          >
-            <RefreshCw className="w-3 h-3" />
-          </button>
-          <button
-            onClick={() => onSkip(track.id)}
-            className="p-1 hover:bg-[#1a3a1a] text-[#1a3a1a]"
-            title="Skip"
-          >
-            <X className="w-3 h-3" />
-          </button>
+      {/* Expanded error details */}
+      {track.status === 'error' && showErrorDetail && track.error && (
+        <div className="px-10 pb-2 text-xs space-y-1">
+          <p className="text-[#ff3333]">{track.error}</p>
+          {track.errorHint && (
+            <p className="text-[#ffaa00]">HINT: {track.errorHint}</p>
+          )}
+          {track.errorDetail && (
+            <pre className="text-[10px] text-[#aa5555] whitespace-pre-wrap break-all bg-[#0a0a0a] border border-[#1a3a1a] p-2 max-h-32 overflow-y-auto">
+{track.errorDetail}
+            </pre>
+          )}
         </div>
       )}
     </div>
