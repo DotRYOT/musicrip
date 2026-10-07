@@ -39,6 +39,9 @@ let currentSettings = {
   ytMaxDelayMs: 4000,
   ytMaxRetries: 3,
   cookieFile: '',
+  // Cookie source is OPTIONAL: 'none' | 'file' (uses cookieFile) | 'browser' (uses cookieBrowser)
+  cookieSource: 'none',
+  cookieBrowser: '', // chrome / firefox / edge / brave / opera / safari / vivaldi (+ optional profile, e.g. "chrome:Default")
 };
 
 // Load saved settings
@@ -327,11 +330,90 @@ function getYtDlpCommonArgs(settings) {
     '--socket-timeout', '30',
     '--ignore-errors',
   ];
-  const cookieFile = String((settings && settings.cookieFile) || '').trim().replace(/^~(?=$|\/)/, process.env.HOME || '');
-  if (cookieFile && fs.existsSync(cookieFile)) {
-    args.push('--cookies', cookieFile);
-  }
+  args.push(...getCookieArgs(settings));
   return args;
+}
+
+// Optional YouTube authentication to raise rate limits / unlock age-restricted
+// content. Three modes, controlled by Settings -> "Cookies" (default: none):
+//   - none    : anonymous (default)
+//   - file    : Netscape-format cookies.txt exported from the browser
+//   - browser : read cookies directly from a local browser profile via
+//               yt-dlp --cookies-from-browser (chrome, firefox, edge, ...)
+function getCookieArgs(settings) {
+  const s = settings || currentSettings;
+  // Backward compat: if cookieSource is unset but a cookieFile path exists, treat as 'file'.
+  const source = String(s.cookieSource || ((s.cookieFile || '').trim() ? 'file' : 'none')).toLowerCase();
+  if (source === 'file') {
+    const cookieFile = String(s.cookieFile || '').trim().replace(/^~(?=$|\/)/, process.env.HOME || '');
+    if (cookieFile && fs.existsSync(cookieFile)) {
+      return ['--cookies', cookieFile];
+    }
+    return [];
+  }
+  if (source === 'browser') {
+    const browser = String(s.cookieBrowser || '').trim().replace(/["'`$\\]/g, '');
+    if (browser) {
+      return ['--cookies-from-browser', browser];
+    }
+  }
+  return [];
+}
+
+const KNOWN_COOKIES_BROWSERS = ['brave', 'chrome', 'chromium', 'edge', 'firefox', 'opera', 'safari', 'vivaldi', 'whale'];
+
+// Validate cookie configuration without running a download (used by Settings UI).
+async function validateCookieConfig(settings) {
+  const s = settings || currentSettings;
+  const source = String(s.cookieSource || 'none').toLowerCase();
+  if (source === 'none' || !source) {
+    return { ok: true, message: 'No cookies configured (anonymous mode).' };
+  }
+  if (source === 'file') {
+    const raw = String(s.cookieFile || '').trim();
+    if (!raw) return { ok: false, message: 'Cookies file path is empty.' };
+    const p = raw.replace(/^~(?=$|\/)/, process.env.HOME || '');
+    if (!fs.existsSync(p)) return { ok: false, message: `Cookies file not found: ${p}` };
+    let content = '';
+    try {
+      content = fs.readFileSync(p, 'utf-8').slice(0, 4096);
+    } catch {
+      return { ok: false, message: `Cookies file could not be read: ${p}` };
+    }
+    if (!/#.*(Netscape|WWW-Authenticate)/i.test(content) && !/^#[ \t]*HTTP Cookie File/mi.test(content)) {
+      return { ok: false, message: 'File does not look like a Netscape-format cookies.txt export.' };
+    }
+    return { ok: true, message: `Cookies file OK (${p}).` };
+  }
+  if (source === 'browser') {
+    const browser = String(s.cookieBrowser || '').trim().toLowerCase();
+    if (!browser) return { ok: false, message: 'No browser selected.' };
+    const name = browser.split(':')[0];
+    if (!KNOWN_COOKIES_BROWSERS.includes(name)) {
+      return { ok: false, message: `Unsupported browser "${name}". Choose one of: ${KNOWN_COOKIES_BROWSERS.join(', ')}.` };
+    }
+    // Ask yt-dlp to actually open the cookie store — catches locked/missing profiles.
+    try {
+      await runYtDlpThrottled(
+        ({ addArgs }) => execAsync(`yt-dlp ${addArgs.join(' ')} --simulate --skip-download "https://www.youtube.com/watch?v=jNQXAC9IVRw"`, {
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 60000,
+        }),
+        { settings: s }
+      );
+      return { ok: true, message: `Cookies loaded from browser profile "${browser}".` };
+    } catch (err) {
+      const msg = String((err && (err.stderr || err.message)) || '');
+      if (/not found/i.test(msg) && /yt-dlp/i.test(msg)) {
+        return { ok: false, message: 'yt-dlp is not installed or not on PATH — cannot test browser cookies.' };
+      }
+      if (/rate|429|bot/i.test(msg)) {
+        return { ok: true, message: `Browser profile "${browser}" readable (YouTube throttled the test video, but cookies parsed OK).` };
+      }
+      return { ok: false, message: `Could not read cookies from "${browser}": ${msg.split('\n').filter(Boolean).pop() || 'unknown error'}` };
+    }
+  }
+  return { ok: false, message: `Unknown cookie source "${source}".` };
 }
 
 // Run yt-dlp with: global serialization, randomized inter-call delay, and
@@ -1058,6 +1140,18 @@ app.post('/api/settings', (req, res) => {
     fs.writeFileSync(settingsPath, JSON.stringify(currentSettings, null, 2));
   } catch {}
   res.json({ success: true });
+});
+
+// Validate cookie configuration (optional auth for higher YouTube limits).
+// Body may override settings before saving, e.g. { cookieSource, cookieFile, cookieBrowser }.
+app.post('/api/cookies/validate', async (req, res) => {
+  try {
+    const candidate = req.body && Object.keys(req.body).length ? { ...currentSettings, ...req.body } : currentSettings;
+    const result = await validateCookieConfig(candidate);
+    res.json(result);
+  } catch (err) {
+    res.json({ ok: false, message: `Validation failed: ${(err && err.message) || 'unknown error'}` });
+  }
 });
 
 // YouTube search (for manual matching)

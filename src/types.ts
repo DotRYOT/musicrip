@@ -51,7 +51,10 @@ export interface Settings {
   ytMinDelayMs: number;
   ytMaxDelayMs: number;
   ytMaxRetries: number;
+  // Cookie source is OPTIONAL: 'none' | 'file' (uses cookieFile) | 'browser' (uses cookieBrowser)
+  cookieSource: 'none' | 'file' | 'browser';
   cookieFile: string;
+  cookieBrowser: string;
 }
 
 export interface TidalAuthStatus {
